@@ -180,7 +180,6 @@ struct EventPipeSequencePoint
     ThreadSequenceNumberMap ThreadSequenceNumbers;
 
     EventPipeSequencePoint();
-    ~EventPipeSequencePoint();
 };
 
 #endif // FEATURE_PERFTRACING

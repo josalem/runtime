@@ -19,12 +19,25 @@ class EventPipeThread;
 
 void ReleaseEventPipeThreadRef(EventPipeThread* pThread);
 void AcquireEventPipeThreadRef(EventPipeThread* pThread);
+void WeakReleaseEventPipeThreadRef(EventPipeThread* pThread);
+void WeakAcquireEventPipeThreadRef(EventPipeThread* pThread);
+
+/**
+ * The standard holder is a _strong_ reference and implicates the lifetime of the held object.
+ * 
+ * The weak holder is a _weak_ reference and *does NOT* increment the internal ref count of the referenced object,
+ * but will call the destructor if the ref count is 0 when it falls out of scope.
+ * Users of this reference should do null checks before use.
+ * This is similar to c++'s std::weak_ptr and its lock() method
+ * 
+ */
 typedef Wrapper<EventPipeThread*, AcquireEventPipeThreadRef, ReleaseEventPipeThreadRef> EventPipeThreadHolder;
+typedef Wrapper<EventPipeThread*, WeakAcquireEventPipeThreadRef, WeakReleaseEventPipeThreadRef> WeakEventPipeThreadHolder;
 
 class EventPipeThreadSessionState
 {
     // immutable
-    EventPipeThreadHolder m_pThread;
+    WeakEventPipeThreadHolder m_pThread;
 
     // immutable
     EventPipeSession* m_pSession;
@@ -89,14 +102,14 @@ public:
 
 class EventPipeThread
 {
-    static EVENTPIPE_THREAD_LOCAL EventPipeThreadHolder gCurrentEventPipeThreadHolder;
+    static EVENTPIPE_THREAD_LOCAL WeakEventPipeThreadHolder gCurrentEventPipeThreadHolder;
 
     ~EventPipeThread();
 
     // The EventPipeThreadHolder maintains one count while the thread is alive
     // and each session's EventPipeBufferList maintains one count while it
     // exists
-    LONG m_refCount;
+    Volatile<LONG> m_refCount;
 
     // Per-session state.
     // The pointers in this array are only read/written under m_lock
@@ -127,7 +140,7 @@ public:
 
     EventPipeThread();
     void AddRef();
-    void Release();
+    void Release(bool isStrong);
     SpinLock *GetLock();
 #ifdef DEBUG
     bool IsLockOwnedByCurrentThread();

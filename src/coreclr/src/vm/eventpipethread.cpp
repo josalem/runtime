@@ -93,7 +93,7 @@ void EventPipeThreadSessionState::IncrementSequenceNumber()
 void ReleaseEventPipeThreadRef(EventPipeThread *pThread)
 {
     LIMITED_METHOD_CONTRACT;
-    pThread->Release();
+    pThread->Release(true);
 }
 
 void AcquireEventPipeThreadRef(EventPipeThread *pThread)
@@ -102,12 +102,25 @@ void AcquireEventPipeThreadRef(EventPipeThread *pThread)
     pThread->AddRef();
 }
 
+void WeakReleaseEventPipeThreadRef(EventPipeThread* pThread)
+{
+    LIMITED_METHOD_CONTRACT;
+    if (pThread != nullptr)
+        pThread->Release(false);
+}
+
+void WeakAcquireEventPipeThreadRef(EventPipeThread* pThread)
+{
+    LIMITED_METHOD_CONTRACT;
+    // noop
+}
+
 #ifndef __GNUC__
 __declspec(thread)
 #else // !__GNUC__
 thread_local
 #endif // !__GNUC__
-EventPipeThreadHolder EventPipeThread::gCurrentEventPipeThreadHolder;
+WeakEventPipeThreadHolder EventPipeThread::gCurrentEventPipeThreadHolder;
 
 EventPipeThread::EventPipeThread()
 {
@@ -177,10 +190,10 @@ void EventPipeThread::AddRef()
     FastInterlockIncrement(&m_refCount);
 }
 
-void EventPipeThread::Release()
+void EventPipeThread::Release(bool isStrong)
 {
     LIMITED_METHOD_CONTRACT;
-    if (FastInterlockDecrement(&m_refCount) == 0)
+    if ((isStrong && FastInterlockDecrement(&m_refCount) == 0) || m_refCount.Load() == 0)
     {
         // https://isocpp.org/wiki/faq/freestore-mgmt#delete-this
         // As long as you're careful, it's okay (not evil) for an object to commit suicide (delete this).

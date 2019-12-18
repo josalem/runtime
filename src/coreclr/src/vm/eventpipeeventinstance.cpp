@@ -189,15 +189,4 @@ EventPipeSequencePoint::EventPipeSequencePoint()
     TimeStamp.QuadPart = 0;
 }
 
-EventPipeSequencePoint::~EventPipeSequencePoint()
-{
-    // Each entry in the map owns a ref-count on the corresponding thread
-    for (ThreadSequenceNumberMap::Iterator pCur = ThreadSequenceNumbers.Begin();
-        pCur != ThreadSequenceNumbers.End();
-        pCur++)
-    {
-        pCur->Key()->GetThread()->Release();
-    }
-}
-
 #endif // FEATURE_PERFTRACING
