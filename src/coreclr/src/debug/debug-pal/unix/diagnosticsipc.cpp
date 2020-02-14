@@ -32,6 +32,16 @@ IpcStream::DiagnosticsIpc::~DiagnosticsIpc()
     delete _pServerAddress;
 }
 
+IpcStream *IpcStream::DiagnosticsIpc::Connect(ErrorCallback callback) const
+{
+    return nullptr;
+}
+
+IpcStream::DiagnosticsIpc *IpcStream::DiagnosticsIpc::Init(const char *const pIpcName, ErrorCallback callback)
+{
+    return nullptr;
+}
+
 IpcStream::DiagnosticsIpc *IpcStream::DiagnosticsIpc::Create(const char *const pIpcName, ErrorCallback callback)
 {
 #ifdef __APPLE__

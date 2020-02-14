@@ -31,8 +31,14 @@ public:
         //! Creates an IPC object
         static DiagnosticsIpc *Create(const char *const pIpcName, ErrorCallback callback = nullptr);
 
+        //! Create an Ipc from an existing transport
+        static DiagnosticsIpc *Init(const char *const pIpcName, ErrorCallback callback = nullptr);
+
         //! Enables the underlaying IPC implementation to accept connection.
         IpcStream *Accept(ErrorCallback callback = nullptr) const;
+
+        //! Connect to an existing transport
+        IpcStream *Connect(ErrorCallback callback = nullptr) const;
 
         //! Closes an open IPC.
         void Close(ErrorCallback callback = nullptr);

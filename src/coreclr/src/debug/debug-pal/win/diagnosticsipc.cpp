@@ -50,6 +50,29 @@ IpcStream::DiagnosticsIpc *IpcStream::DiagnosticsIpc::Create(const char *const p
     return new IpcStream::DiagnosticsIpc(namedPipeName);
 }
 
+IpcStream::DiagnosticsIpc *IpcStream::DiagnosticsIpc::Init(const char *const pIpcName, ErrorCallback callback)
+{
+    char namedPipeName[MaxNamedPipeNameLength]{};
+
+    assert(pIpcName != nullptr);
+
+    int nCharactersWritten = sprintf_s(
+        namedPipeName,
+        sizeof(namedPipeName),
+        "\\\\.\\pipe\\%s",
+        pIpcName);
+
+    if (nCharactersWritten == -1)
+    {
+        if (callback != nullptr)
+            callback("Failed to generate the named pipe name", nCharactersWritten);
+        assert(nCharactersWritten != -1);
+        return nullptr;
+    }
+
+    return new IpcStream::DiagnosticsIpc(namedPipeName);
+}
+
 IpcStream *IpcStream::DiagnosticsIpc::Accept(ErrorCallback callback) const
 {
     const uint32_t nInBufferSize = 16 * 1024;
@@ -94,6 +117,45 @@ IpcStream *IpcStream::DiagnosticsIpc::Accept(ErrorCallback callback) const
     return new IpcStream(hPipe);
 }
 
+IpcStream *IpcStream::DiagnosticsIpc::Connect(ErrorCallback callback) const
+{
+    const uint32_t nInBufferSize = 16 * 1024;
+    const uint32_t nOutBufferSize = 16 * 1024;
+    HANDLE hPipe = ::CreateFileA( 
+        _pNamedPipeName,   // pipe name 
+        GENERIC_READ |  // read and write access 
+        GENERIC_WRITE, 
+        0,              // no sharing 
+        NULL,           // default security attributes
+        OPEN_EXISTING,  // opens existing pipe 
+        0,              // default attributes 
+        NULL);          // no template file
+
+    if (hPipe == INVALID_HANDLE_VALUE)
+    {
+        if (callback != nullptr)
+            callback("Failed to connect to named pipe.", ::GetLastError());
+        return nullptr;
+    }
+
+    // DWORD dwMode = PIPE_READMODE_MESSAGE; 
+    // const BOOL fSuccess = ::SetNamedPipeHandleState( 
+    //     hPipe,    // pipe handle 
+    //     &dwMode,  // new pipe mode 
+    //     NULL,     // don't set maximum bytes 
+    //     NULL);    // don't set maximum time
+
+    // if (!fSuccess)
+    // {
+    //     if (callback != nullptr)
+    //         callback("A client process failed to connect.", ::GetLastError());
+    //     ::CloseHandle(hPipe);
+    //     return nullptr;
+    // }
+
+    return new IpcStream(hPipe);
+}
+
 void IpcStream::DiagnosticsIpc::Close(ErrorCallback)
 {
 }
@@ -104,8 +166,11 @@ IpcStream::~IpcStream()
     {
         Flush();
 
-        const BOOL fSuccessDisconnectNamedPipe = ::DisconnectNamedPipe(_hPipe);
-        assert(fSuccessDisconnectNamedPipe != 0);
+        // FIXME: This needs to be changed to act differently b/w connections and servers
+        // I'm loathe to subclass in case we need to port to c, but we could do it that way 
+        // or we could just make an enum and check the value.
+        // const BOOL fSuccessDisconnectNamedPipe = ::DisconnectNamedPipe(_hPipe);
+        // assert(fSuccessDisconnectNamedPipe != 0);
 
         const BOOL fSuccessCloseHandle = ::CloseHandle(_hPipe);
         assert(fSuccessCloseHandle != 0);
