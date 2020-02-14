@@ -48,7 +48,8 @@ DWORD WINAPI DiagnosticServer::DiagnosticsServerThread(LPVOID)
         while (!s_shuttingDown)
         {
             // FIXME: Ideally this would be something like a std::shared_ptr
-            IpcStream *pStream = s_pIpc->Accept(LoggingCallback);
+            // IpcStream *pStream = s_pIpc->Accept(LoggingCallback);
+            IpcStream *pStream = s_pIpc->Connect(LoggingCallback);
 
             if (pStream == nullptr)
                 continue;
@@ -151,8 +152,9 @@ bool DiagnosticServer::Initialize()
         }
 
         // TODO: Should we handle/assert that (s_pIpc == nullptr)?
-        s_pIpc = IpcStream::DiagnosticsIpc::Create(
-            transportPath, ErrorCallback);
+        // s_pIpc = IpcStream::DiagnosticsIpc::Create(
+        //     transportPath, ErrorCallback);
+        s_pIpc = IpcStream::DiagnosticsIpc::Init(transportPath, ErrorCallback);
 
         if (s_pIpc != nullptr)
         {
