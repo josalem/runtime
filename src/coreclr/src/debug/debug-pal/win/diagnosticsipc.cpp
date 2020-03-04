@@ -129,7 +129,7 @@ IpcStream *IpcStream::DiagnosticsIpc::Accept(bool shouldBlock, ErrorCallback cal
     return pStream;
 }
 
-IpcStream *IpcStream::DiagnosticsIpc::Connect(ErrorCallback callback)
+IpcStream *IpcStream::DiagnosticsIpc::Connect(ErrorCallback callback) const
 {
     _ASSERTE(_mode == ConnectionMode::CLIENT);
     if (_mode != ConnectionMode::CLIENT)

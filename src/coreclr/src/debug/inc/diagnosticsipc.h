@@ -41,7 +41,7 @@ public:
         //! Enables the underlaying IPC implementation to accept connection.
         IpcStream *Accept(bool shouldBlock, ErrorCallback callback = nullptr) const;
 
-        IpcStream *Connect(ErrorCallback callback = nullptr);
+        IpcStream *Connect(ErrorCallback callback = nullptr) const;
 
         //! Closes an open IPC.
         void Close(ErrorCallback callback = nullptr);
@@ -77,7 +77,7 @@ public:
 private:
 #ifdef TARGET_UNIX
     int _clientSocket = -1;
-    IpcStream(int clientSocket, ConnectionMode mode = ConnectionMode::SERVER)
+    IpcStream(int clientSocket, DiagnosticsIpc::ConnectionMode mode = DiagnosticsIpc::ConnectionMode::SERVER)
         : _clientSocket(clientSocket), _mode(mode) {}
 #else
     HANDLE _hPipe = INVALID_HANDLE_VALUE;

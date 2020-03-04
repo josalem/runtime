@@ -148,7 +148,7 @@ IpcStream *IpcStream::DiagnosticsIpc::Connect(ErrorCallback callback) const
         // TODO: Anything else?
     }
 
-    return new IpcStream(clientSocket, ServerMode::CLIENT);
+    return new IpcStream(clientSocket, ConnectionMode::CLIENT);
 }
 
 IpcStream *IpcStream::DiagnosticsIpc::Accept(bool shouldBlock, ErrorCallback callback) const
@@ -208,6 +208,14 @@ IpcStream::~IpcStream()
         _ASSERTE(fSuccessClose != -1);
     }
 }
+
+
+IpcStream *IpcStream::Select(IpcStream **pStreams, uint32_t nStreams, ErrorCallback callback)
+{
+    // TODO: implement;
+    return nullptr;
+}
+
 
 bool IpcStream::Read(void *lpBuffer, const uint32_t nBytesToRead, uint32_t &nBytesRead) const
 {
