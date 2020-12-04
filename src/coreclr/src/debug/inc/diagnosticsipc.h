@@ -91,6 +91,8 @@ public:
         // Connect to a server and returns a connected stream
         IpcStream *Connect(ErrorCallback callback = nullptr);
 
+        bool Reset(ErrorCallback callback = nullptr);
+
         // Closes an open IPC.
         // Only attempts minimal cleanup if isShutdown==true, i.e., unlinks Unix Domain Socket on Linux, no-op on Windows
         void Close(bool isShutdown = false, ErrorCallback callback = nullptr);
@@ -110,10 +112,26 @@ public:
 #else
         static const uint32_t MaxNamedPipeNameLength = 256;
         char _pNamedPipeName[MaxNamedPipeNameLength]; // https://docs.microsoft.com/en-us/windows/desktop/api/winbase/nf-winbase-createnamedpipea
+        typedef struct
+        {
+            HANDLE _hPipe;
+            OVERLAPPED _oOverlap;
+            BOOL _isTestReading;
+        } Pipe;
+        static const DWORD INSTANCES = 4;
+        Pipe Instances[INSTANCES];
         HANDLE _hPipe = INVALID_HANDLE_VALUE;
         OVERLAPPED _oOverlap = {};
 
         DiagnosticsIpc(const char(&namedPipeName)[MaxNamedPipeNameLength], ConnectionMode mode = ConnectionMode::LISTEN);
+        BOOL IsValid() const { return (_hPipe != INVALID_HANDLE_VALUE && _oOverlap.hEvent != INVALID_HANDLE_VALUE); }
+
+        BOOL RecreatePipe(ErrorCallback callback = nullptr);
+        BOOL Reinitialize(ErrorCallback callback = nullptr);
+        // Listen on the current handle
+        BOOL ListenInternal(ErrorCallback callback = nullptr);
+        // Goes back to the listening state in the case of an error
+        BOOL DisconnectAndReconnect(ErrorCallback callback = nullptr);
 #endif /* TARGET_UNIX */
 
         bool _isListening;

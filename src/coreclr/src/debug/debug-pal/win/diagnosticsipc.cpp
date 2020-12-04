@@ -8,12 +8,66 @@
 
 #define _ASSERTE assert
 
+#define ___ASSERT(pred) \
+    if (!(pred)) \
+    { \
+        _ASSERTE(pred); \
+        while (true) {} \
+    }
+
+
 IpcStream::DiagnosticsIpc::DiagnosticsIpc(const char(&namedPipeName)[MaxNamedPipeNameLength], ConnectionMode mode) : 
     mode(mode),
     _isListening(false)
 {
     memcpy(_pNamedPipeName, namedPipeName, sizeof(_pNamedPipeName));
     memset(&_oOverlap, 0, sizeof(OVERLAPPED));
+}
+
+BOOL IpcStream::DiagnosticsIpc::Reinitialize(ErrorCallback callback)
+{
+    fprintf(stdout, "::REINITIALIZED\n");
+    BOOL fSuccess = true;
+    _isListening = false;
+    if (_hPipe != INVALID_HANDLE_VALUE)
+    {
+        fSuccess &= DisconnectNamedPipe(_hPipe);
+        fSuccess &= ::CloseHandle(_hPipe);
+        _hPipe = INVALID_HANDLE_VALUE;
+    }
+
+    if (_oOverlap.hEvent != INVALID_HANDLE_VALUE)
+    {
+        fSuccess &= ::CloseHandle(_oOverlap.hEvent);
+        memset(&_oOverlap, 0, sizeof(OVERLAPPED)); // clear the overlapped objects state
+        _oOverlap.hEvent = INVALID_HANDLE_VALUE;
+    }
+
+    return fSuccess;
+}
+
+bool IpcStream::DiagnosticsIpc::Reset(ErrorCallback callback)
+{
+    return DisconnectAndReconnect(callback);
+}
+
+BOOL IpcStream::DiagnosticsIpc::DisconnectAndReconnect(ErrorCallback callback)
+{
+    BOOL fSuccess = DisconnectNamedPipe(_hPipe);
+    if (!fSuccess)
+    {
+        if (callback != nullptr)
+            callback("Failed to DisconnectNamedPipe!", ::GetLastError());
+    }
+
+    fSuccess = ListenInternal(callback);
+    if (!fSuccess)
+    {
+        if (callback != nullptr)
+            callback("Failed to ListenInternal!", -1);
+    }
+
+    return fSuccess;
 }
 
 IpcStream::DiagnosticsIpc::~DiagnosticsIpc()
@@ -54,6 +108,60 @@ IpcStream::DiagnosticsIpc *IpcStream::DiagnosticsIpc::Create(const char *const p
     return new IpcStream::DiagnosticsIpc(namedPipeName, mode);
 }
 
+BOOL IpcStream::DiagnosticsIpc::ListenInternal(ErrorCallback callback)
+{
+    _ASSERTE(mode == ConnectionMode::LISTEN);
+    if (mode != ConnectionMode::LISTEN)
+    {
+        if (callback != nullptr)
+            callback("Cannot call Listen on a client connection", -1);
+        return false;
+    }
+
+    _ASSERTE(_hPipe != INVALID_HANDLE_VALUE);
+    _ASSERTE(_oOverlap.hEvent != INVALID_HANDLE_VALUE);
+
+    BOOL fSuccess = ::ConnectNamedPipe(_hPipe, &_oOverlap) != 0;
+    _isListening = true;
+    if (!fSuccess)
+    {
+        const DWORD errorCode = ::GetLastError();
+        switch (errorCode)
+        {
+            case ERROR_IO_PENDING:
+                // There was a pending connection that can be waited on (will happen in poll)
+                break;
+            case ERROR_PIPE_CONNECTED:
+                // Occurs when a client connects before the function is called.
+                // In this case, there is a connection between client and
+                // server, even though the function returned zero.
+            case ERROR_NO_DATA:
+                // The pipe closed before we could connect to it.
+                // This was most likely someone inspecting the "file" via
+                // an API like GetFileAttributes.  The listen "failed", but
+                // we'll realize this on the next Accept.
+                SetEvent(_oOverlap.hEvent);
+                fprintf(stdout, "ERROR_PIPE_CONNECTED || ERROR_NO_DATA - setting overlapped event\n");
+                break;
+
+
+                // // TODO: THIS MESSES THINGS UP SINCE IT LEAVES THE PIPE IN A BAD SPOT IF LISTEN IS CALLED FROM ACCEPT BLEGH
+                // Reset();
+                // return false;
+
+            default:
+                if (callback != nullptr)
+                    callback("A client process failed to connect with an unexpected error.", errorCode);
+                ___ASSERT(!errorCode);
+                SetEvent(_oOverlap.hEvent);
+                return false;
+        }
+    }
+
+
+    return fSuccess;
+}
+
 bool IpcStream::DiagnosticsIpc::Listen(ErrorCallback callback)
 {
     _ASSERTE(mode == ConnectionMode::LISTEN);
@@ -82,50 +190,36 @@ bool IpcStream::DiagnosticsIpc::Listen(ErrorCallback callback)
 
     if (_hPipe == INVALID_HANDLE_VALUE)
     {
+        DWORD dwError = ::GetLastError();
         if (callback != nullptr)
-            callback("Failed to create an instance of a named pipe.", ::GetLastError());
+            callback("Failed to create an instance of a named pipe.", dwError);
+        ___ASSERT(!IsValid());
         return false;
     }
 
     HANDLE hOverlapEvent = CreateEvent(NULL, true, false, NULL);
     if (hOverlapEvent == NULL)
     {
+        DWORD dwError = ::GetLastError();
         if (callback != nullptr)
-            callback("Failed to create overlap event", ::GetLastError());
-        ::CloseHandle(_hPipe);
-        _hPipe = INVALID_HANDLE_VALUE;
+            callback("Failed to create overlap event", dwError);
+        ___ASSERT(IsValid());
+        // Reset();
         return false;
     }
     _oOverlap.hEvent = hOverlapEvent;
 
-    BOOL fSuccess = ::ConnectNamedPipe(_hPipe, &_oOverlap) != 0;
-    if (!fSuccess)
-    {
-        const DWORD errorCode = ::GetLastError();
-        switch (errorCode)
-        {
-            case ERROR_IO_PENDING:
-                // There was a pending connection that can be waited on (will happen in poll)
-            case ERROR_PIPE_CONNECTED:
-                // Occurs when a client connects before the function is called.
-                // In this case, there is a connection between client and
-                // server, even though the function returned zero.
-                break;
+    BOOL fSuccess = ListenInternal(callback);
 
-            default:
-                if (callback != nullptr)
-                    callback("A client process failed to connect.", errorCode);
-                ::CloseHandle(_hPipe);
-                _hPipe = INVALID_HANDLE_VALUE;
-                ::CloseHandle(_oOverlap.hEvent);
-                _oOverlap.hEvent = INVALID_HANDLE_VALUE;
-                memset(&_oOverlap, 0, sizeof(OVERLAPPED)); // clear the overlapped objects state
-                return false;
-        }
-    }
-
-    _isListening = true;
     return true;
+}
+
+BOOL IpcStream::DiagnosticsIpc::RecreatePipe(ErrorCallback callback)
+{
+    bool fSuccess = !!Reinitialize(callback);
+    fSuccess &= Listen(callback);
+    fprintf(stdout, "RECREATING? %d - pipe %p\n", fSuccess, _hPipe);
+    return fSuccess;
 }
 
 IpcStream *IpcStream::DiagnosticsIpc::Accept(ErrorCallback callback)
@@ -143,28 +237,32 @@ IpcStream *IpcStream::DiagnosticsIpc::Accept(ErrorCallback callback)
 
     if (!fSuccess)
     {
+        DWORD dwError = ::GetLastError();
         if (callback != nullptr)
-            callback("Failed to GetOverlappedResults for NamedPipe server", ::GetLastError());
+            callback("Failed to GetOverlappedResults for NamedPipe server", dwError);
+        ___ASSERT(fSuccess);
+        fprintf(stdout, "failed to GetOverlappedResults!! error %d, pipe %p\n", dwError, _hPipe);
         // close the pipe (cleaned up and reset below)
-        ::CloseHandle(_hPipe);
+        //::CloseHandle(_hPipe);
+        //DisconnectAndReconnect();
+        return nullptr;
     }
     else
     {
         // create new IpcStream using handle (passes ownership to pStream)
-        pStream = new IpcStream(_hPipe, ConnectionMode::LISTEN);
+        HANDLE newPipeConnection = _hPipe;
+        _hPipe = INVALID_HANDLE_VALUE;
+        pStream = new IpcStream(newPipeConnection, ConnectionMode::LISTEN);
     }
 
     // reset the server
-    _hPipe = INVALID_HANDLE_VALUE;
-    _isListening = false;
-    ::CloseHandle(_oOverlap.hEvent);
-    memset(&_oOverlap, 0, sizeof(OVERLAPPED)); // clear the overlapped objects state
-    fSuccess = Listen(callback);
-    if (!fSuccess)
-    {
-        delete pStream;
-        pStream = nullptr;
-    }
+    fSuccess = RecreatePipe(callback);
+    // ___ASSERT(IsValid());
+    // if (!fSuccess)
+    // {
+    //     delete pStream;
+    //     pStream = nullptr;
+    // }
 
     return pStream;
 }
