@@ -112,26 +112,29 @@ public:
 #else
         static const uint32_t MaxNamedPipeNameLength = 256;
         char _pNamedPipeName[MaxNamedPipeNameLength]; // https://docs.microsoft.com/en-us/windows/desktop/api/winbase/nf-winbase-createnamedpipea
-        typedef struct
+        static const DWORD INSTANCES = 32;
+        typedef struct Pipe
         {
-            HANDLE _hPipe;
+            HANDLE _hPipe = INVALID_HANDLE_VALUE;
             OVERLAPPED _oOverlap;
-            BOOL _isTestReading;
+            BOOL _isListening = false;
         } Pipe;
-        static const DWORD INSTANCES = 4;
+        HANDLE Events[INSTANCES];
         Pipe Instances[INSTANCES];
+        // TODO: ADD MORE INSTANCES TO THE STATE MACHINE AND MAKE THE STATE MACHINE WORK WITH MULTIPLE INSTANCES
         HANDLE _hPipe = INVALID_HANDLE_VALUE;
         OVERLAPPED _oOverlap = {};
 
         DiagnosticsIpc(const char(&namedPipeName)[MaxNamedPipeNameLength], ConnectionMode mode = ConnectionMode::LISTEN);
         BOOL IsValid() const { return (_hPipe != INVALID_HANDLE_VALUE && _oOverlap.hEvent != INVALID_HANDLE_VALUE); }
 
-        BOOL RecreatePipe(ErrorCallback callback = nullptr);
-        BOOL Reinitialize(ErrorCallback callback = nullptr);
+        BOOL RecreatePipe(DWORD instance, ErrorCallback callback = nullptr);
+        BOOL CreatePipe(DWORD instance, ErrorCallback callback = nullptr);
+        BOOL Reinitialize(DWORD instance, ErrorCallback callback = nullptr);
         // Listen on the current handle
-        BOOL ListenInternal(ErrorCallback callback = nullptr);
+        BOOL ListenInternal(DWORD instance, ErrorCallback callback = nullptr);
         // Goes back to the listening state in the case of an error
-        BOOL DisconnectAndReconnect(ErrorCallback callback = nullptr);
+        BOOL DisconnectAndReconnect(DWORD instance, ErrorCallback callback = nullptr);
 #endif /* TARGET_UNIX */
 
         bool _isListening;

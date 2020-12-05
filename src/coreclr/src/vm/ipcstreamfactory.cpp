@@ -183,6 +183,7 @@ bool IpcStreamFactory::BuildAndAddPort(IpcStreamFactory::DiagnosticPortBuilder b
             }
             else
             {
+                ASSERT(!"FAILED TO BUILD LISTEN PORT");
                 delete pIpc;
                 return false;
             }

@@ -21,26 +21,34 @@ IpcStream::DiagnosticsIpc::DiagnosticsIpc(const char(&namedPipeName)[MaxNamedPip
     _isListening(false)
 {
     memcpy(_pNamedPipeName, namedPipeName, sizeof(_pNamedPipeName));
+    for (DWORD i = 0; i < INSTANCES; i++)
+    {
+        memset(&Instances[i]._oOverlap, 0, sizeof(OVERLAPPED));
+        Instances[i]._oOverlap.hEvent = INVALID_HANDLE_VALUE;
+        Instances[i]._hPipe = INVALID_HANDLE_VALUE;
+        Events[i] = INVALID_HANDLE_VALUE;
+    }
     memset(&_oOverlap, 0, sizeof(OVERLAPPED));
 }
 
-BOOL IpcStream::DiagnosticsIpc::Reinitialize(ErrorCallback callback)
+BOOL IpcStream::DiagnosticsIpc::Reinitialize(DWORD instance, ErrorCallback callback)
 {
     fprintf(stdout, "::REINITIALIZED\n");
     BOOL fSuccess = true;
-    _isListening = false;
-    if (_hPipe != INVALID_HANDLE_VALUE)
+    Instances[instance]._isListening = false;
+    if (Instances[instance]._hPipe != INVALID_HANDLE_VALUE)
     {
-        fSuccess &= DisconnectNamedPipe(_hPipe);
-        fSuccess &= ::CloseHandle(_hPipe);
-        _hPipe = INVALID_HANDLE_VALUE;
+        fSuccess &= DisconnectNamedPipe(Instances[instance]._hPipe);
+        fSuccess &= ::CloseHandle(Instances[instance]._hPipe);
+        Instances[instance]._hPipe = INVALID_HANDLE_VALUE;
     }
 
-    if (_oOverlap.hEvent != INVALID_HANDLE_VALUE)
+    if (Instances[instance]._oOverlap.hEvent != INVALID_HANDLE_VALUE)
     {
-        fSuccess &= ::CloseHandle(_oOverlap.hEvent);
-        memset(&_oOverlap, 0, sizeof(OVERLAPPED)); // clear the overlapped objects state
-        _oOverlap.hEvent = INVALID_HANDLE_VALUE;
+        fSuccess &= ::CloseHandle(Instances[instance]._oOverlap.hEvent);
+        memset(&Instances[instance]._oOverlap, 0, sizeof(OVERLAPPED)); // clear the overlapped objects state
+        Instances[instance]._oOverlap.hEvent = INVALID_HANDLE_VALUE;
+        Events[instance] = INVALID_HANDLE_VALUE;
     }
 
     return fSuccess;
@@ -48,19 +56,24 @@ BOOL IpcStream::DiagnosticsIpc::Reinitialize(ErrorCallback callback)
 
 bool IpcStream::DiagnosticsIpc::Reset(ErrorCallback callback)
 {
-    return DisconnectAndReconnect(callback);
+    BOOL fSuccess = true;
+    for (DWORD i = 0; i < INSTANCES; i++)
+        fSuccess &= DisconnectAndReconnect(i, callback);
+    return fSuccess;
 }
 
-BOOL IpcStream::DiagnosticsIpc::DisconnectAndReconnect(ErrorCallback callback)
+BOOL IpcStream::DiagnosticsIpc::DisconnectAndReconnect(DWORD instance, ErrorCallback callback)
 {
-    BOOL fSuccess = DisconnectNamedPipe(_hPipe);
+    BOOL fSuccess = DisconnectNamedPipe(Instances[instance]._hPipe);
     if (!fSuccess)
     {
         if (callback != nullptr)
             callback("Failed to DisconnectNamedPipe!", ::GetLastError());
     }
 
-    fSuccess = ListenInternal(callback);
+    Instances[instance]._isListening = false;
+
+    fSuccess = ListenInternal(instance, callback);
     if (!fSuccess)
     {
         if (callback != nullptr)
@@ -108,7 +121,7 @@ IpcStream::DiagnosticsIpc *IpcStream::DiagnosticsIpc::Create(const char *const p
     return new IpcStream::DiagnosticsIpc(namedPipeName, mode);
 }
 
-BOOL IpcStream::DiagnosticsIpc::ListenInternal(ErrorCallback callback)
+BOOL IpcStream::DiagnosticsIpc::ListenInternal(DWORD instance, ErrorCallback callback)
 {
     _ASSERTE(mode == ConnectionMode::LISTEN);
     if (mode != ConnectionMode::LISTEN)
@@ -118,11 +131,11 @@ BOOL IpcStream::DiagnosticsIpc::ListenInternal(ErrorCallback callback)
         return false;
     }
 
-    _ASSERTE(_hPipe != INVALID_HANDLE_VALUE);
-    _ASSERTE(_oOverlap.hEvent != INVALID_HANDLE_VALUE);
+    _ASSERTE(Instances[instance]._hPipe != INVALID_HANDLE_VALUE);
+    _ASSERTE(Instances[instance]._oOverlap.hEvent != INVALID_HANDLE_VALUE);
 
-    BOOL fSuccess = ::ConnectNamedPipe(_hPipe, &_oOverlap) != 0;
-    _isListening = true;
+    BOOL fSuccess = ::ConnectNamedPipe(Instances[instance]._hPipe, &Instances[instance]._oOverlap) != 0;
+    Instances[instance]._isListening = true;
     if (!fSuccess)
     {
         const DWORD errorCode = ::GetLastError();
@@ -140,26 +153,21 @@ BOOL IpcStream::DiagnosticsIpc::ListenInternal(ErrorCallback callback)
                 // This was most likely someone inspecting the "file" via
                 // an API like GetFileAttributes.  The listen "failed", but
                 // we'll realize this on the next Accept.
-                SetEvent(_oOverlap.hEvent);
+                SetEvent(Instances[instance]._oOverlap.hEvent);
                 fprintf(stdout, "ERROR_PIPE_CONNECTED || ERROR_NO_DATA - setting overlapped event\n");
                 break;
-
-
-                // // TODO: THIS MESSES THINGS UP SINCE IT LEAVES THE PIPE IN A BAD SPOT IF LISTEN IS CALLED FROM ACCEPT BLEGH
-                // Reset();
-                // return false;
 
             default:
                 if (callback != nullptr)
                     callback("A client process failed to connect with an unexpected error.", errorCode);
                 ___ASSERT(!errorCode);
-                SetEvent(_oOverlap.hEvent);
+                SetEvent(Instances[instance]._oOverlap.hEvent);
                 return false;
         }
     }
 
 
-    return fSuccess;
+    return true;
 }
 
 bool IpcStream::DiagnosticsIpc::Listen(ErrorCallback callback)
@@ -172,12 +180,27 @@ bool IpcStream::DiagnosticsIpc::Listen(ErrorCallback callback)
         return false;
     }
 
-    if (_isListening)
+    BOOL fSuccess = TRUE;
+    for (DWORD i = 0; i < INSTANCES; i++)
+    {
+        fSuccess &= CreatePipe(i, callback);
+        fSuccess &= ListenInternal(i, callback);
+    }
+
+    return fSuccess;
+}
+
+BOOL IpcStream::DiagnosticsIpc::CreatePipe(DWORD instance, ErrorCallback callback)
+{
+    if (Instances[instance]._isListening)
         return true;
+
+    _ASSERTE(Instances[instance]._hPipe == INVALID_HANDLE_VALUE);
+    _ASSERTE(Events[instance] == INVALID_HANDLE_VALUE);
 
     const uint32_t nInBufferSize = 16 * 1024;
     const uint32_t nOutBufferSize = 16 * 1024;
-    _hPipe = ::CreateNamedPipeA(
+    Instances[instance]._hPipe = ::CreateNamedPipeA(
         _pNamedPipeName,                                            // pipe name
         PIPE_ACCESS_DUPLEX |                                        // read/write access
         FILE_FLAG_OVERLAPPED,                                       // async listening
@@ -188,7 +211,7 @@ bool IpcStream::DiagnosticsIpc::Listen(ErrorCallback callback)
         0,                                                          // default client time-out
         NULL);                                                      // default security attribute
 
-    if (_hPipe == INVALID_HANDLE_VALUE)
+    if (Instances[instance]._hPipe == INVALID_HANDLE_VALUE)
     {
         DWORD dwError = ::GetLastError();
         if (callback != nullptr)
@@ -197,8 +220,8 @@ bool IpcStream::DiagnosticsIpc::Listen(ErrorCallback callback)
         return false;
     }
 
-    HANDLE hOverlapEvent = CreateEvent(NULL, true, false, NULL);
-    if (hOverlapEvent == NULL)
+    Events[instance] = CreateEvent(NULL, true, false, NULL);
+    if (Events[instance] == NULL)
     {
         DWORD dwError = ::GetLastError();
         if (callback != nullptr)
@@ -207,64 +230,82 @@ bool IpcStream::DiagnosticsIpc::Listen(ErrorCallback callback)
         // Reset();
         return false;
     }
-    _oOverlap.hEvent = hOverlapEvent;
+    Instances[instance]._oOverlap.hEvent = Events[instance];
 
-    BOOL fSuccess = ListenInternal(callback);
-
-    return true;
+    return TRUE;
 }
 
-BOOL IpcStream::DiagnosticsIpc::RecreatePipe(ErrorCallback callback)
+BOOL IpcStream::DiagnosticsIpc::RecreatePipe(DWORD instance, ErrorCallback callback)
 {
-    bool fSuccess = !!Reinitialize(callback);
-    fSuccess &= Listen(callback);
+    BOOL fSuccess = Reinitialize(instance, callback);
+    fSuccess &= CreatePipe(instance, callback);
+    fSuccess &= ListenInternal(instance, callback);
     fprintf(stdout, "RECREATING? %d - pipe %p\n", fSuccess, _hPipe);
     return fSuccess;
 }
 
 IpcStream *IpcStream::DiagnosticsIpc::Accept(ErrorCallback callback)
 {
-    _ASSERTE(_isListening);
+    // _ASSERTE(_isListening);
     _ASSERTE(mode == ConnectionMode::LISTEN);
 
-    DWORD dwDummy = 0;
+    // DWORD dwDummy = 0;
     IpcStream *pStream = nullptr;
-    bool fSuccess = GetOverlappedResult(
-        _hPipe,     // handle
-        &_oOverlap, // overlapped
-        &dwDummy,   // throw-away dword
-        true);      // wait till event signals
+    bool fSuccess = true;
+    // bool fSuccess = GetOverlappedResult(
+    //     _hPipe,     // handle
+    //     &_oOverlap, // overlapped
+    //     &dwDummy,   // throw-away dword
+    //     true);      // wait till event signals
 
-    if (!fSuccess)
+    DWORD dwWait = WaitForMultipleObjects(INSTANCES, Events, false, INFINITE);
+
+    if (dwWait >= WAIT_OBJECT_0 && dwWait < WAIT_OBJECT_0 + INSTANCES)
     {
-        DWORD dwError = ::GetLastError();
-        if (callback != nullptr)
-            callback("Failed to GetOverlappedResults for NamedPipe server", dwError);
-        ___ASSERT(fSuccess);
-        fprintf(stdout, "failed to GetOverlappedResults!! error %d, pipe %p\n", dwError, _hPipe);
-        // close the pipe (cleaned up and reset below)
-        //::CloseHandle(_hPipe);
-        //DisconnectAndReconnect();
-        return nullptr;
+        DWORD instance = dwWait - WAIT_OBJECT_0;
+        HANDLE newPipeConnection = Instances[instance]._hPipe;
+        Instances[instance]._hPipe = INVALID_HANDLE_VALUE;
+        pStream = new IpcStream(newPipeConnection, ConnectionMode::LISTEN);
+        fSuccess = RecreatePipe(instance, callback);
+        return pStream;
     }
     else
     {
-        // create new IpcStream using handle (passes ownership to pStream)
-        HANDLE newPipeConnection = _hPipe;
-        _hPipe = INVALID_HANDLE_VALUE;
-        pStream = new IpcStream(newPipeConnection, ConnectionMode::LISTEN);
+        // TODO
+        return nullptr;
     }
+    
 
-    // reset the server
-    fSuccess = RecreatePipe(callback);
-    // ___ASSERT(IsValid());
     // if (!fSuccess)
     // {
-    //     delete pStream;
-    //     pStream = nullptr;
+    //     DWORD dwError = ::GetLastError();
+    //     if (callback != nullptr)
+    //         callback("Failed to GetOverlappedResults for NamedPipe server", dwError);
+    //     ___ASSERT(fSuccess);
+    //     fprintf(stdout, "failed to GetOverlappedResults!! error %d, pipe %p\n", dwError, _hPipe);
+    //     // close the pipe (cleaned up and reset below)
+    //     //::CloseHandle(_hPipe);
+    //     //DisconnectAndReconnect();
+    //     return nullptr;
+    // }
+    // else
+    // {
+    //     // create new IpcStream using handle (passes ownership to pStream)
+    //     HANDLE newPipeConnection = _hPipe;
+    //     _hPipe = INVALID_HANDLE_VALUE;
+    //     pStream = new IpcStream(newPipeConnection, ConnectionMode::LISTEN);
     // }
 
-    return pStream;
+    // // reset the server
+    // fSuccess = RecreatePipe(callback);
+    // // ___ASSERT(IsValid());
+    // // if (!fSuccess)
+    // // {
+    // //     delete pStream;
+    // //     pStream = nullptr;
+    // // }
+
+    // return pStream;
 }
 
 IpcStream *IpcStream::DiagnosticsIpc::Connect(ErrorCallback callback)
@@ -298,6 +339,7 @@ IpcStream *IpcStream::DiagnosticsIpc::Connect(ErrorCallback callback)
 
 void IpcStream::DiagnosticsIpc::Close(bool isShutdown, ErrorCallback callback)
 {
+    // TODO
     // don't attempt cleanup on shutdown and let the OS handle it
     if (isShutdown)
     {
@@ -375,8 +417,26 @@ void IpcStream::Close(ErrorCallback callback)
 
 int32_t IpcStream::DiagnosticsIpc::Poll(IpcPollHandle *rgIpcPollHandles, uint32_t nHandles, int32_t timeoutMs, ErrorCallback callback)
 {
+    uint32_t nHandlesActual = 0;
+    DWORD *pRanges = new DWORD[nHandles];
+    for (uint32_t i = 0; i < nHandles; i++)
+    {
+        if (rgIpcPollHandles[i].pIpc != nullptr)
+        {
+            pRanges[i] = i + rgIpcPollHandles[i].pIpc->INSTANCES;
+            // expand count for additional instances
+            nHandlesActual += rgIpcPollHandles[i].pIpc->INSTANCES;
+        }
+        else
+        {
+            pRanges[i] = i + 1;
+            nHandlesActual++;
+        }
+    }
+
     // load up an array of handles
-    HANDLE *pHandles = new HANDLE[nHandles];
+    HANDLE *pHandles = new HANDLE[nHandlesActual];
+    uint32_t actualIndex = 0;
     for (uint32_t i = 0; i < nHandles; i++)
     {
         rgIpcPollHandles[i].revents = 0; // ignore any inputs on revents
@@ -384,7 +444,11 @@ int32_t IpcStream::DiagnosticsIpc::Poll(IpcPollHandle *rgIpcPollHandles, uint32_
         {
             // SERVER
             _ASSERTE(rgIpcPollHandles[i].pIpc->mode == DiagnosticsIpc::ConnectionMode::LISTEN);
-            pHandles[i] = rgIpcPollHandles[i].pIpc->_oOverlap.hEvent;
+            for (uint32_t j = 0; j < rgIpcPollHandles[i].pIpc->INSTANCES; j++)
+            {
+                pHandles[actualIndex++] = rgIpcPollHandles[i].pIpc->Events[j];
+            }
+            // pHandles[i] = rgIpcPollHandles[i].pIpc->_oOverlap.hEvent;
         }
         else
         {
@@ -409,36 +473,38 @@ int32_t IpcStream::DiagnosticsIpc::Poll(IpcPollHandle *rgIpcPollHandles, uint32_
                     switch (error)
                     {
                         case ERROR_IO_PENDING:
-                            pHandles[i] = rgIpcPollHandles[i].pStream->_oOverlap.hEvent;
+                            pHandles[actualIndex++] = rgIpcPollHandles[i].pStream->_oOverlap.hEvent;
                             break;
                         case ERROR_PIPE_NOT_CONNECTED:
                             // hangup
                             rgIpcPollHandles[i].revents = (uint8_t)PollEvents::HANGUP;
                             delete[] pHandles;
+                            delete[] pRanges;
                             return -1;
                         default:
                             if (callback != nullptr)
                                 callback("0 byte async read on client connection failed", error);
                             delete[] pHandles;
+                            delete[] pRanges;
                             return -1;
                     }
                 }
                 else
                 {
                     // there's already data to be read
-                    pHandles[i] = rgIpcPollHandles[i].pStream->_oOverlap.hEvent;
+                    pHandles[actualIndex++] = rgIpcPollHandles[i].pStream->_oOverlap.hEvent;
                 }
             }
             else
             {
-                pHandles[i] = rgIpcPollHandles[i].pStream->_oOverlap.hEvent;
+                pHandles[actualIndex++] = rgIpcPollHandles[i].pStream->_oOverlap.hEvent;
             }
         }
     }
 
     // call wait for multiple obj
     DWORD dwWait = WaitForMultipleObjects(
-        nHandles,       // count
+        nHandlesActual, // count
         pHandles,       // handles
         false,          // Don't wait-all
         timeoutMs);
@@ -447,29 +513,40 @@ int32_t IpcStream::DiagnosticsIpc::Poll(IpcPollHandle *rgIpcPollHandles, uint32_
     {
         // we timed out
         delete[] pHandles;
+        delete[] pRanges;
         return 0;
     }
 
     if (dwWait == WAIT_FAILED)
     {
         // we errored
+        DWORD dwError = GetLastError();
+        fprintf(stdout, "WFMO failed - %d\n", dwError);
+        for (uint32_t i = 0; i < nHandlesActual; i++)
+        {
+            fprintf(stdout, "\thandle (0x%p)\n", pHandles[i]);
+        }
+        _ASSERTE(!"Failed wait for multiple objects!!" && dwError);
         if (callback != nullptr)
-            callback("WaitForMultipleObjects failed", ::GetLastError());
+            callback("WaitForMultipleObjects failed", dwError);
         delete[] pHandles;
+        delete[] pRanges;
         return -1;
     }
 
     // determine which of the streams signaled
     DWORD index = dwWait - WAIT_OBJECT_0;
     // error check the index
-    if (index < 0 || index > (nHandles - 1))
+    if (index < 0 || index > (nHandlesActual - 1))
     {
         // check if we abandoned something
+        // TODO this logic is wrong now
         DWORD abandonedIndex = dwWait - WAIT_ABANDONED_0;
         if (abandonedIndex > 0 || abandonedIndex < (nHandles - 1))
         {
             rgIpcPollHandles[abandonedIndex].revents = (uint8_t)IpcStream::DiagnosticsIpc::PollEvents::HANGUP;
             delete[] pHandles;
+            delete[] pRanges;
             return -1;
         }
         else
@@ -477,47 +554,60 @@ int32_t IpcStream::DiagnosticsIpc::Poll(IpcPollHandle *rgIpcPollHandles, uint32_
             if (callback != nullptr)
                 callback("WaitForMultipleObjects failed", ::GetLastError());
             delete[] pHandles;
+            delete[] pRanges;
             return -1;
         }
     }
 
+    DWORD signaledIndexActual = 0;
+    for (DWORD i = 0; i < nHandles; i++)
+    {
+        if (i <= index && index < pRanges[i])
+        {
+            signaledIndexActual = i;
+            break;
+        }
+    }
+
     // Set revents depending on what signaled the stream
-    if (rgIpcPollHandles[index].pIpc == nullptr)
+    if (rgIpcPollHandles[signaledIndexActual].pIpc == nullptr)
     {
         // CLIENT
         // check if the connection got hung up
         DWORD dwDummy = 0;
-        bool fSuccess = GetOverlappedResult(rgIpcPollHandles[index].pStream->_hPipe,
-                                            &rgIpcPollHandles[index].pStream->_oOverlap,
+        bool fSuccess = GetOverlappedResult(rgIpcPollHandles[signaledIndexActual].pStream->_hPipe,
+                                            &rgIpcPollHandles[signaledIndexActual].pStream->_oOverlap,
                                             &dwDummy,
                                             true);
-        rgIpcPollHandles[index].pStream->_isTestReading = false;
+        rgIpcPollHandles[signaledIndexActual].pStream->_isTestReading = false;
         if (!fSuccess)
         {
             DWORD error = ::GetLastError();
             if (error == ERROR_PIPE_NOT_CONNECTED || error == ERROR_BROKEN_PIPE)
-                rgIpcPollHandles[index].revents = (uint8_t)IpcStream::DiagnosticsIpc::PollEvents::HANGUP;
+                rgIpcPollHandles[signaledIndexActual].revents = (uint8_t)IpcStream::DiagnosticsIpc::PollEvents::HANGUP;
             else
             {
                 if (callback != nullptr)
                     callback("Client connection error", error);
-                rgIpcPollHandles[index].revents = (uint8_t)IpcStream::DiagnosticsIpc::PollEvents::ERR;
+                rgIpcPollHandles[signaledIndexActual].revents = (uint8_t)IpcStream::DiagnosticsIpc::PollEvents::ERR;
                 delete[] pHandles;
+                delete[] pRanges;
                 return -1;
             }
         }
         else
         {
-            rgIpcPollHandles[index].revents = (uint8_t)IpcStream::DiagnosticsIpc::PollEvents::SIGNALED;
+            rgIpcPollHandles[signaledIndexActual].revents = (uint8_t)IpcStream::DiagnosticsIpc::PollEvents::SIGNALED;
         }
     }
     else
     {
         // SERVER
-        rgIpcPollHandles[index].revents = (uint8_t)IpcStream::DiagnosticsIpc::PollEvents::SIGNALED;
+        rgIpcPollHandles[signaledIndexActual].revents = (uint8_t)IpcStream::DiagnosticsIpc::PollEvents::SIGNALED;
     }
 
     delete[] pHandles;
+    delete[] pRanges;
     return 1;
 }
 
