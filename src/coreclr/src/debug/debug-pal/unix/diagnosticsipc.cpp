@@ -38,6 +38,8 @@ IpcStream::DiagnosticsIpc::~DiagnosticsIpc()
     delete _pServerAddress;
 }
 
+bool IpcStream::DiagnosticsIpc::Reset() { return true; }
+
 IpcStream::DiagnosticsIpc *IpcStream::DiagnosticsIpc::Create(const char *const pIpcName, ConnectionMode mode, ErrorCallback callback)
 {
     sockaddr_un serverAddress{};

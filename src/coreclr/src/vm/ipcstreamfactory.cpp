@@ -99,9 +99,10 @@ IpcStream *IpcStreamFactory::ListenDiagnosticPort::GetConnectedStream(ErrorCallb
     return _pIpc->Accept(callback);
 }
 
-// noop for server
-void IpcStreamFactory::ListenDiagnosticPort::Reset(ErrorCallback)
+void IpcStreamFactory::ListenDiagnosticPort::Reset(ErrorCallback callback)
 {
+    bool fSuccess = _pIpc->Reset(callback);
+    ASSERT(fSuccess);
     return;
 }
 
@@ -328,6 +329,7 @@ IpcStream *IpcStreamFactory::GetNextAvailableStream(ErrorCallback callback)
                             if (pStream == nullptr)
                             {
                                 fSawError = true;
+                                ((DiagnosticPort*)(rgIpcPollHandles[i].pUserData))->Reset(callback);
                             }
                             s_currentPort = (DiagnosticPort*)(rgIpcPollHandles[i].pUserData);
                         }
@@ -340,10 +342,13 @@ IpcStream *IpcStreamFactory::GetNextAvailableStream(ErrorCallback callback)
                         break;
                     case IpcStream::DiagnosticsIpc::PollEvents::NONE:
                         STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_INFO10, "IpcStreamFactory::GetNextAvailableStream - NON :: Poll attempt: %d, connection %d had no events.\n", nPollAttempts, i);
+                        ((DiagnosticPort*)(rgIpcPollHandles[i].pUserData))->Reset(callback);
+                        fSawError = true;
                         break;
                     default:
                         STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_INFO10, "IpcStreamFactory::GetNextAvailableStream - UNK :: Poll attempt: %d, connection %d had invalid PollEvent.\n", nPollAttempts, i);
                         fSawError = true;
+                        ((DiagnosticPort*)(rgIpcPollHandles[i].pUserData))->Reset(callback);
                         break;
                 }
             }
