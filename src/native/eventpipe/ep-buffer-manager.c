@@ -260,21 +260,25 @@ ep_buffer_manager_exit_lock(EventPipeBufferManager *buffer_manager)
 {
 	ep_buffer_manager_requires_lock_held(buffer_manager);
 	ep_timestamp_t delta = ep_perf_timestamp_get() - buffer_manager->lock_start_timestamp;
-	for (int i = 0; i < EP_BUFFER_MANAGER_HIST_BINS; i++)
-		if (delta > histogram_limits[i] && histogram_limits[i] > -1)
+
+	for (int i = 0; i < EP_BUFFER_MANAGER_HIST_BINS; i++) {
+		if (delta > histogram_limits[i] && histogram_limits[i] > -1) {
 			continue;
-		else
+		} else {
 			buffer_manager->histogram[i]++;
+			break;
+		}
+	}
 
 	buffer_manager->lock_iterations++;
 #ifdef FEATURE_CORECLR
-	STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_INFO100000, "Held buffer manager lock :: buffer_manager=%p, duration=%ld\n", (void*)buffer_manager, delta);
-	if (buffer_manager->lock_iterations % 1000 == 0)
+	STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_INFO100000, "Held buffer manager lock :: buffer_manager=%p, duration=%ld\n", (void*)buffer_manager, (long int)delta);
+	if (buffer_manager->lock_iterations % 1'000'000 == 0)
 	{
 		// print the historgram to stderr and stresslog
-		fprintf(stderr, "Buffer Manager Histogram at lock iteration %d\n", buffer_manager->lock_iterations);
+		fprintf(stderr, "Buffer Manager Histogram at lock iteration %ld\n", buffer_manager->lock_iterations);
 		for (int i = 0; i < EP_BUFFER_MANAGER_HIST_BINS; i++)
-			fprintf(stderr, "    %d -> %ul\n", histogram_limits[i], buffer_manager->histogram[i]);
+			fprintf(stderr, "    %ld -> %ld\n", (long int)histogram_limits[i], (long int)buffer_manager->histogram[i]);
 	}
 #endif
 }

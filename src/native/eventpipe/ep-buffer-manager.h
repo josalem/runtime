@@ -86,7 +86,7 @@ ep_buffer_list_ensure_consistency (EventPipeBufferList *buffer_list);
  * EventPipeBufferManager.
  */
 
-#define EP_BUFFER_MANAGER_HIST_BINS 7
+#define EP_BUFFER_MANAGER_HIST_BINS 12
 
 #if defined(EP_INLINE_GETTER_SETTER) || defined(EP_IMPL_BUFFER_MANAGER_GETTER_SETTER)
 struct _EventPipeBufferManager {
@@ -129,7 +129,7 @@ struct _EventPipeBufferManager_Internal {
 	size_t sequence_point_alloc_budget;
 
 	// HACK log time holding lock into this array as a histogram
-	// buckets go 0-10, 10-50, 50-100, 100-500, 500-1000, 1000-5000, 5000+ in microseconds
+	// see histogram_limits for each bucket's upper bound, -1 means unbounded
 	ep_timestamp_t histogram[EP_BUFFER_MANAGER_HIST_BINS];
 	unsigned long lock_iterations;
 	ep_timestamp_t lock_start_timestamp;
@@ -143,7 +143,7 @@ struct _EventPipeBufferManager_Internal {
 #endif
 };
 
-ep_timestamp_t histogram_limits[EP_BUFFER_MANAGER_HIST_BINS] = { 10, 50, 100, 500, 1000, 5000, -1};
+static ep_timestamp_t histogram_limits[EP_BUFFER_MANAGER_HIST_BINS] = { 10, 50, 100, 500, 1000, 2500, 5000, 10000, 15000, 50'000, 100'000, -1 };
 
 #if !defined(EP_INLINE_GETTER_SETTER) && !defined(EP_IMPL_BUFFER_MANAGER_GETTER_SETTER)
 struct _EventPipeBufferManager {
