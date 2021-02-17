@@ -1314,10 +1314,10 @@ ep_buffer_manager_write_all_buffers_to_file_v4 (
 	}
 
 	// TODO: Cull any EventPipeThreads + ThreadSessionStates who's physical thread has died
-	thread_session_state_list_iterator = ep_rt_thread_session_state_list_iterator_begin (&buffer_manager->thread_session_state_list);
 	wait_start = ep_perf_timestamp_get();
 	EP_SPIN_LOCK_ENTER (&buffer_manager->rt_lock, section4)
 		ep_buffer_manager_enter_lock (buffer_manager, wait_start);
+		thread_session_state_list_iterator = ep_rt_thread_session_state_list_iterator_begin (&buffer_manager->thread_session_state_list);
 		while (!ep_rt_thread_session_state_list_iterator_end (&buffer_manager->thread_session_state_list, &thread_session_state_list_iterator)) {
 			
 			EventPipeThreadSessionState * thread_session_state = ep_rt_thread_session_state_list_iterator_value (&thread_session_state_list_iterator);
@@ -1333,6 +1333,7 @@ ep_buffer_manager_write_all_buffers_to_file_v4 (
 						// FIXME: remove this
 						// fprintf(stderr, "EP_BUFFER_MANAGER :: Culling session state (%p) belonging to thread (%p)\n", (void*)thread_session_state, (void*)ep_thread_holder_get_thread(&thread_holder));
 						ep_rt_thread_session_state_list_remove(&buffer_manager->thread_session_state_list, thread_session_state);
+						ep_rt_thread_session_state_array_append(&session_states_to_delete, thread_session_state);
 					}
 					ep_thread_holder_fini (&thread_holder);
 				}
