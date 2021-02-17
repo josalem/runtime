@@ -128,6 +128,12 @@ struct _EventPipeBufferManager_Internal {
 	// point before triggering the next one
 	size_t sequence_point_alloc_budget;
 
+	// HACK log time holding lock into this array as a histogram
+	// see histogram_limits for each bucket's upper bound, -1 means unbounded
+	ep_timestamp_t hold_histogram[EP_BUFFER_MANAGER_HIST_BINS];
+	ep_timestamp_t wait_histogram[EP_BUFFER_MANAGER_HIST_BINS];
+	unsigned long lock_iterations;
+	ep_timestamp_t lock_start_timestamp;
 #ifdef EP_CHECKED_BUILD
 	volatile int64_t num_events_stored;
 	volatile int64_t num_events_dropped;
@@ -137,6 +143,8 @@ struct _EventPipeBufferManager_Internal {
 	uint32_t num_buffers_leaked;
 #endif
 };
+
+static ep_timestamp_t histogram_limits[EP_BUFFER_MANAGER_HIST_BINS] = { 10, 50, 100, 500, 1000, 2500, 5000, 10000, 15000, 50'000, 100'000, -1 };
 
 #if !defined(EP_INLINE_GETTER_SETTER) && !defined(EP_IMPL_BUFFER_MANAGER_GETTER_SETTER)
 struct _EventPipeBufferManager {
@@ -171,6 +179,12 @@ void
 ep_buffer_manager_init_sequence_point_thread_list (
 	EventPipeBufferManager *buffer_manager,
 	EventPipeSequencePoint *sequence_point);
+
+void
+ep_buffer_manager_enter_lock(EventPipeBufferManager *buffer_manager, ep_timestamp_t wait_start);
+
+void
+ep_buffer_manager_exit_lock(EventPipeBufferManager *buffer_manager);
 
 // Write an event to the input thread's current event buffer.
 // An optional event_thread can be provided for sample profiler events.
