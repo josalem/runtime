@@ -130,7 +130,8 @@ struct _EventPipeBufferManager_Internal {
 
 	// HACK log time holding lock into this array as a histogram
 	// see histogram_limits for each bucket's upper bound, -1 means unbounded
-	ep_timestamp_t histogram[EP_BUFFER_MANAGER_HIST_BINS];
+	ep_timestamp_t hold_histogram[EP_BUFFER_MANAGER_HIST_BINS];
+	ep_timestamp_t wait_histogram[EP_BUFFER_MANAGER_HIST_BINS];
 	unsigned long lock_iterations;
 	ep_timestamp_t lock_start_timestamp;
 #ifdef EP_CHECKED_BUILD
@@ -180,7 +181,7 @@ ep_buffer_manager_init_sequence_point_thread_list (
 	EventPipeSequencePoint *sequence_point);
 
 void
-ep_buffer_manager_enter_lock(EventPipeBufferManager *buffer_manager);
+ep_buffer_manager_enter_lock(EventPipeBufferManager *buffer_manager, ep_timestamp_t wait_start);
 
 void
 ep_buffer_manager_exit_lock(EventPipeBufferManager *buffer_manager);

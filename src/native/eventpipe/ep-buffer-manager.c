@@ -249,10 +249,21 @@ ep_buffer_list_get_and_remove_head (EventPipeBufferList *buffer_list)
 }
 
 void
-ep_buffer_manager_enter_lock(EventPipeBufferManager *buffer_manager)
+ep_buffer_manager_enter_lock(EventPipeBufferManager *buffer_manager, ep_timestamp_t wait_start)
 {
 	ep_buffer_manager_requires_lock_held(buffer_manager);
 	buffer_manager->lock_start_timestamp = ep_perf_timestamp_get();
+
+	ep_timestamp_t delta = buffer_manager->lock_start_timestamp - wait_start;
+
+	for (int i = 0; i < EP_BUFFER_MANAGER_HIST_BINS; i++) {
+		if (delta > histogram_limits[i] && histogram_limits[i] > -1) {
+			continue;
+		} else {
+			buffer_manager->wait_histogram[i]++;
+			break;
+		}
+	}
 }
 
 void
@@ -265,7 +276,7 @@ ep_buffer_manager_exit_lock(EventPipeBufferManager *buffer_manager)
 		if (delta > histogram_limits[i] && histogram_limits[i] > -1) {
 			continue;
 		} else {
-			buffer_manager->histogram[i]++;
+			buffer_manager->hold_histogram[i]++;
 			break;
 		}
 	}
@@ -273,12 +284,16 @@ ep_buffer_manager_exit_lock(EventPipeBufferManager *buffer_manager)
 	buffer_manager->lock_iterations++;
 #ifdef FEATURE_CORECLR
 	STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_INFO100000, "Held buffer manager lock :: buffer_manager=%p, duration=%ld\n", (void*)buffer_manager, (long int)delta);
-	if (buffer_manager->lock_iterations % 1'000'000 == 0)
+	if (buffer_manager->lock_iterations % 100'000 == 0)
 	{
 		// print the historgram to stderr and stresslog
-		fprintf(stderr, "Buffer Manager Histogram at lock iteration %ld\n", buffer_manager->lock_iterations);
+		fprintf(stderr, "Buffer Manager Hold Histogram at lock iteration %ld\n", buffer_manager->lock_iterations);
 		for (int i = 0; i < EP_BUFFER_MANAGER_HIST_BINS; i++)
-			fprintf(stderr, "    %ld -> %ld\n", (long int)histogram_limits[i], (long int)buffer_manager->histogram[i]);
+			fprintf(stderr, "    %ld -> %ld\n", (long int)histogram_limits[i], (long int)buffer_manager->hold_histogram[i]);
+		// print the historgram to stderr and stresslog
+		fprintf(stderr, "Buffer Manager Wait Histogram at lock iteration %ld\n", buffer_manager->lock_iterations);
+		for (int i = 0; i < EP_BUFFER_MANAGER_HIST_BINS; i++)
+			fprintf(stderr, "    %ld -> %ld\n", (long int)histogram_limits[i], (long int)buffer_manager->wait_histogram[i]);
 	}
 #endif
 }
@@ -453,8 +468,9 @@ buffer_manager_allocate_buffer_for_thread (
 	bool allocate_new_buffer = false;
 
 	// Allocating a buffer requires us to take the lock.
+	ep_timestamp_t wait_start = ep_perf_timestamp_get();
 	EP_SPIN_LOCK_ENTER (&buffer_manager->rt_lock, section1)
-		ep_buffer_manager_enter_lock(buffer_manager);
+		ep_buffer_manager_enter_lock(buffer_manager, wait_start);
 		thread_buffer_list = ep_thread_session_state_get_buffer_list (thread_session_state);
 		if (thread_buffer_list == NULL) {
 			thread_buffer_list = ep_buffer_list_alloc (buffer_manager, ep_thread_session_state_get_thread (thread_session_state));
@@ -589,8 +605,9 @@ buffer_manager_move_next_event_any_thread (
 	ep_rt_buffer_array_init (&buffer_array);
 	ep_rt_buffer_list_array_init (&buffer_list_array);
 
+	ep_timestamp_t wait_start = ep_perf_timestamp_get();
 	EP_SPIN_LOCK_ENTER (&buffer_manager->rt_lock, section1)
-		ep_buffer_manager_enter_lock(buffer_manager);
+		ep_buffer_manager_enter_lock(buffer_manager, wait_start);
 		EventPipeBufferList *buffer_list;
 		EventPipeBuffer *buffer;
 		ep_rt_thread_session_state_list_iterator_t iterator = ep_rt_thread_session_state_list_iterator_begin (&buffer_manager->thread_session_state_list);
@@ -730,8 +747,9 @@ buffer_manager_advance_to_non_empty_buffer (
 			// found a non-empty buffer
 			done = true;
 		} else {
+			ep_timestamp_t wait_start = ep_perf_timestamp_get();
 			EP_SPIN_LOCK_ENTER (&buffer_manager->rt_lock, section1)
-				ep_buffer_manager_enter_lock(buffer_manager);
+				ep_buffer_manager_enter_lock(buffer_manager, wait_start);
 				// delete the empty buffer
 				EventPipeBuffer *removed_buffer = ep_buffer_list_get_and_remove_head (buffer_list);
 				EP_ASSERT (current_buffer == removed_buffer);
@@ -843,7 +861,8 @@ ep_buffer_manager_alloc (
 	instance->current_buffer_list = NULL;
 
 	// init the limits of the bins
-	memset(&instance->histogram, 0, sizeof(instance->histogram));
+	memset(&instance->hold_histogram, 0, sizeof(instance->hold_histogram));
+	memset(&instance->wait_histogram, 0, sizeof(instance->wait_histogram));
 
 	instance->max_size_of_all_buffers = EP_CLAMP ((size_t)100 * 1024, max_size_of_all_buffers, (size_t)UINT32_MAX);
 
@@ -903,8 +922,9 @@ ep_buffer_manager_init_sequence_point_thread_list (
 
 	ep_buffer_manager_requires_lock_not_held (buffer_manager);
 
+	ep_timestamp_t wait_start = ep_perf_timestamp_get();
 	EP_SPIN_LOCK_ENTER (&buffer_manager->rt_lock, section1)
-		ep_buffer_manager_enter_lock(buffer_manager);
+		ep_buffer_manager_enter_lock(buffer_manager, wait_start);
 		buffer_manager_init_sequence_point_thread_list (buffer_manager, sequence_point);
 		ep_buffer_manager_exit_lock(buffer_manager);
 	EP_SPIN_LOCK_EXIT (&buffer_manager->rt_lock, section1)
@@ -1051,8 +1071,9 @@ ep_buffer_manager_suspend_write_event (
 	EP_RT_DECLARE_LOCAL_THREAD_ARRAY (thread_array);
 	ep_rt_thread_array_init (&thread_array);
 
+	ep_timestamp_t wait_start = ep_perf_timestamp_get();
 	EP_SPIN_LOCK_ENTER (&buffer_manager->rt_lock, section1);
-		ep_buffer_manager_enter_lock(buffer_manager);
+		ep_buffer_manager_enter_lock(buffer_manager, wait_start);
 		EP_ASSERT (ep_buffer_manager_ensure_consistency (buffer_manager));
 		// Find all threads that have used this buffer manager.
 		ep_rt_thread_session_state_list_iterator_t thread_session_state_list_iterator = ep_rt_thread_session_state_list_iterator_begin (&buffer_manager->thread_session_state_list);
@@ -1193,10 +1214,15 @@ ep_buffer_manager_write_all_buffers_to_file_v4 (
 
 	*events_written = false;
 
+	// FIXME: find a way to forward declare this without having to assign it
+	ep_rt_thread_session_state_list_iterator_t thread_session_state_list_iterator = ep_rt_thread_session_state_list_iterator_begin (&buffer_manager->thread_session_state_list);
+	EP_RT_DECLARE_LOCAL_THREAD_SESSION_STATE_ARRAY(session_states_to_delete);
+	ep_rt_thread_session_state_array_init(&session_states_to_delete);
 	EventPipeSequencePoint *sequence_point = NULL;
 	ep_timestamp_t current_timestamp_boundary = stop_timestamp;
+	ep_timestamp_t wait_start = ep_perf_timestamp_get();
 	EP_SPIN_LOCK_ENTER (&buffer_manager->rt_lock, section1)
-		ep_buffer_manager_enter_lock(buffer_manager);
+		ep_buffer_manager_enter_lock(buffer_manager, wait_start);
 		if (buffer_manager_try_peek_sequence_point (buffer_manager, &sequence_point))
 			current_timestamp_boundary = EP_MIN (current_timestamp_boundary, ep_sequence_point_get_timestamp (sequence_point));
 		ep_buffer_manager_exit_lock(buffer_manager);
@@ -1247,9 +1273,10 @@ ep_buffer_manager_write_all_buffers_to_file_v4 (
 			// the sequence point captured a lower bound for sequence number on each thread, but iterating
 			// through the events we may have observed that a higher numbered event was recorded. If so we
 			// should adjust the sequence numbers upwards to ensure the data in the stream is consistent.
-			ep_rt_thread_session_state_list_iterator_t thread_session_state_list_iterator = ep_rt_thread_session_state_list_iterator_begin (&buffer_manager->thread_session_state_list);
+			thread_session_state_list_iterator = ep_rt_thread_session_state_list_iterator_begin (&buffer_manager->thread_session_state_list);
+			wait_start = ep_perf_timestamp_get();
 			EP_SPIN_LOCK_ENTER (&buffer_manager->rt_lock, section2)
-				ep_buffer_manager_enter_lock(buffer_manager);
+				ep_buffer_manager_enter_lock(buffer_manager, wait_start);
 				while (!ep_rt_thread_session_state_list_iterator_end (&buffer_manager->thread_session_state_list, &thread_session_state_list_iterator)) {
 					EventPipeThreadSessionState * session_state = ep_rt_thread_session_state_list_iterator_value (&thread_session_state_list_iterator);
 					uint32_t thread_sequence_number = 0;
@@ -1273,8 +1300,9 @@ ep_buffer_manager_write_all_buffers_to_file_v4 (
 			ep_file_write_sequence_point (file, sequence_point);
 
 			// move to the next sequence point if any
+			wait_start = ep_perf_timestamp_get();
 			EP_SPIN_LOCK_ENTER (&buffer_manager->rt_lock, section3)
-				ep_buffer_manager_enter_lock(buffer_manager);
+				ep_buffer_manager_enter_lock(buffer_manager, wait_start);
 				// advance to the next sequence point, if any
 				buffer_manager_dequeue_sequence_point (buffer_manager);
 				current_timestamp_boundary = stop_timestamp;
@@ -1283,6 +1311,60 @@ ep_buffer_manager_write_all_buffers_to_file_v4 (
 				ep_buffer_manager_exit_lock(buffer_manager);
 			EP_SPIN_LOCK_EXIT (&buffer_manager->rt_lock, section3)
 		}
+	}
+
+	// TODO: Cull any EventPipeThreads + ThreadSessionStates who's physical thread has died
+	thread_session_state_list_iterator = ep_rt_thread_session_state_list_iterator_begin (&buffer_manager->thread_session_state_list);
+	wait_start = ep_perf_timestamp_get();
+	EP_SPIN_LOCK_ENTER (&buffer_manager->rt_lock, section4)
+		ep_buffer_manager_enter_lock (buffer_manager, wait_start);
+		while (!ep_rt_thread_session_state_list_iterator_end (&buffer_manager->thread_session_state_list, &thread_session_state_list_iterator)) {
+			
+			EventPipeThreadSessionState * thread_session_state = ep_rt_thread_session_state_list_iterator_value (&thread_session_state_list_iterator);
+			EP_ASSERT (thread_session_state != NULL);
+			if (ep_thread_session_state_get_buffer_list(thread_session_state)->head_buffer == NULL) {
+
+				// This may be the last reference to a given EventPipeThread, so make a ref to keep it around till we're done
+				EventPipeThreadHolder thread_holder;
+				if (ep_thread_holder_init (&thread_holder, ep_thread_session_state_get_thread (thread_session_state))) {
+
+					if (ep_rt_volatile_load_uint32_t_without_barrier(&(ep_thread_holder_get_thread (&thread_holder))->unregistered) > 0) {
+
+						// FIXME: remove this
+						// fprintf(stderr, "EP_BUFFER_MANAGER :: Culling session state (%p) belonging to thread (%p)\n", (void*)thread_session_state, (void*)ep_thread_holder_get_thread(&thread_holder));
+						ep_rt_thread_session_state_list_remove(&buffer_manager->thread_session_state_list, thread_session_state);
+					}
+					ep_thread_holder_fini (&thread_holder);
+				}
+			}
+
+			ep_rt_thread_session_state_list_iterator_next (&thread_session_state_list_iterator);
+		}
+		ep_buffer_manager_exit_lock(buffer_manager);
+	EP_SPIN_LOCK_EXIT (&buffer_manager->rt_lock, section4)
+
+	ep_rt_thread_session_state_array_iterator_t thread_session_state_array_iterator = ep_rt_thread_session_state_array_iterator_begin (&session_states_to_delete);
+	while (!ep_rt_thread_session_state_array_iterator_end (&session_states_to_delete, &thread_session_state_array_iterator)) {
+
+		EventPipeThreadSessionState * thread_session_state = ep_rt_thread_session_state_array_iterator_value (&thread_session_state_array_iterator);
+		EP_ASSERT (thread_session_state != NULL);
+		// This may be the last reference to a given EventPipeThread, so make a ref to keep it around till we're done
+		EventPipeThreadHolder thread_holder;
+		if (ep_thread_holder_init (&thread_holder, ep_thread_session_state_get_thread (thread_session_state))) {
+
+			// briefly hold the thread lock to check it's state
+			ep_rt_spin_lock_handle_t *thread_lock = ep_thread_get_rt_lock_ref (ep_thread_session_state_get_thread (thread_session_state));
+			EP_SPIN_LOCK_ENTER (thread_lock, section5)
+				// if the thread is unregistered delete the session state from it
+				if (ep_rt_volatile_load_uint32_t_without_barrier(&(ep_thread_holder_get_thread (&thread_holder))->unregistered) > 0) {
+					// FIXME: remove this
+					// fprintf(stderr, "EP_BUFFER_MANAGER :: Culling session state (%p) belonging to thread (%p)\n", (void*)thread_session_state, (void*)ep_thread_holder_get_thread(&thread_holder));
+					ep_thread_delete_session_state (ep_thread_session_state_get_thread (thread_session_state), ep_thread_session_state_get_session (thread_session_state));
+				}
+			EP_SPIN_LOCK_EXIT (thread_lock, section5)
+			ep_thread_holder_fini (&thread_holder);
+		}
+		ep_rt_thread_session_state_array_iterator_next(&thread_session_state_array_iterator);
 	}
 
 ep_on_exit:
@@ -1321,8 +1403,9 @@ ep_buffer_manager_deallocate_buffers (EventPipeBufferManager *buffer_manager)
 	ep_rt_thread_session_state_array_init (&thread_session_states_to_remove);
 
 	// Take the buffer manager manipulation lock
+	ep_timestamp_t wait_start = ep_perf_timestamp_get();
 	EP_SPIN_LOCK_ENTER (&buffer_manager->rt_lock, section1)
-		ep_buffer_manager_enter_lock(buffer_manager);
+		ep_buffer_manager_enter_lock(buffer_manager, wait_start);
 		EP_ASSERT (ep_buffer_manager_ensure_consistency (buffer_manager));
 
 		ep_rt_thread_session_state_list_iterator_t thread_session_state_list_iterator = ep_rt_thread_session_state_list_iterator_begin (&buffer_manager->thread_session_state_list);
