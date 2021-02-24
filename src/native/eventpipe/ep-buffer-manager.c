@@ -1297,7 +1297,7 @@ ep_buffer_manager_write_all_buffers_to_file_v4 (
 
 					if (ep_thread_session_state_get_buffer_list(session_state)->head_buffer == NULL) {
 
-						if (ep_rt_volatile_load_uint32_t_without_barrier(&(ep_thread_session_state_get_thread(session_state))->unregistered) > 0) {
+						if (ep_rt_volatile_load_uint32_t_without_barrier(ep_thread_get_unregistered_ref(ep_thread_session_state_get_thread(session_state))) > 0) {
 
 							// FIXME: remove this
 							// fprintf(stderr, "EP_BUFFER_MANAGER :: Culling session state (%p) belonging to thread (%p)\n", (void*)thread_session_state, (void*)ep_thread_holder_get_thread(&thread_holder));
@@ -1386,11 +1386,11 @@ ep_buffer_manager_write_all_buffers_to_file_v4 (
 			ep_rt_spin_lock_handle_t *thread_lock = ep_thread_get_rt_lock_ref (ep_thread_session_state_get_thread (thread_session_state));
 			EP_SPIN_LOCK_ENTER (thread_lock, section5)
 				// if the thread is unregistered delete the session state from it
-				if (ep_rt_volatile_load_uint32_t_without_barrier(&(ep_thread_holder_get_thread (&thread_holder))->unregistered) > 0) {
+				// if (ep_rt_volatile_load_uint32_t_without_barrier(&(ep_thread_holder_get_thread (&thread_holder))->unregistered) > 0) {
 					// FIXME: remove this
 					// fprintf(stderr, "EP_BUFFER_MANAGER :: Culling session state (%p) belonging to thread (%p)\n", (void*)thread_session_state, (void*)ep_thread_holder_get_thread(&thread_holder));
 					ep_thread_delete_session_state (ep_thread_session_state_get_thread (thread_session_state), ep_thread_session_state_get_session (thread_session_state));
-				}
+				// }
 			EP_SPIN_LOCK_EXIT (thread_lock, section5)
 			ep_thread_holder_fini (&thread_holder);
 		}
