@@ -1214,8 +1214,6 @@ ep_buffer_manager_write_all_buffers_to_file_v4 (
 
 	*events_written = false;
 
-	// FIXME: find a way to forward declare this without having to assign it
-	ep_rt_thread_session_state_list_iterator_t thread_session_state_list_iterator = ep_rt_thread_session_state_list_iterator_begin (&buffer_manager->thread_session_state_list);
 	EP_RT_DECLARE_LOCAL_THREAD_SESSION_STATE_ARRAY(session_states_to_delete);
 	ep_rt_thread_session_state_array_init(&session_states_to_delete);
 	EventPipeSequencePoint *sequence_point = NULL;
@@ -1273,7 +1271,7 @@ ep_buffer_manager_write_all_buffers_to_file_v4 (
 			// the sequence point captured a lower bound for sequence number on each thread, but iterating
 			// through the events we may have observed that a higher numbered event was recorded. If so we
 			// should adjust the sequence numbers upwards to ensure the data in the stream is consistent.
-			thread_session_state_list_iterator = ep_rt_thread_session_state_list_iterator_begin (&buffer_manager->thread_session_state_list);
+			ep_rt_thread_session_state_list_iterator_t thread_session_state_list_iterator = ep_rt_thread_session_state_list_iterator_begin (&buffer_manager->thread_session_state_list);
 			wait_start = ep_perf_timestamp_get();
 			EP_SPIN_LOCK_ENTER (&buffer_manager->rt_lock, section2)
 				ep_buffer_manager_enter_lock(buffer_manager, wait_start);
@@ -1295,6 +1293,8 @@ ep_buffer_manager_write_all_buffers_to_file_v4 (
 						ep_rt_thread_sequence_number_map_add (ep_sequence_point_get_thread_sequence_numbers_ref (sequence_point), session_state, last_read_sequence_number);
 					}
 
+					ep_rt_thread_session_state_list_iterator_next (&thread_session_state_list_iterator);
+
 					if (ep_thread_session_state_get_buffer_list(session_state)->head_buffer == NULL) {
 
 						if (ep_rt_volatile_load_uint32_t_without_barrier(ep_thread_get_unregistered_ref(ep_thread_session_state_get_thread(session_state))) > 0) {
@@ -1302,18 +1302,9 @@ ep_buffer_manager_write_all_buffers_to_file_v4 (
 							// FIXME: remove this
 							// fprintf(stderr, "EP_BUFFER_MANAGER :: Culling session state (%p) belonging to thread (%p)\n", (void*)thread_session_state, (void*)ep_thread_holder_get_thread(&thread_holder));
 							ep_rt_thread_session_state_array_append(&session_states_to_delete, session_state);
+							ep_rt_thread_session_state_list_remove(&buffer_manager->thread_session_state_list, session_state);
 						}
 					}
-					ep_rt_thread_session_state_list_iterator_next (&thread_session_state_list_iterator);
-				}
-
-				// foreach session_state_to_delete in session_states_to_delete
-				for (ep_rt_thread_session_state_array_iterator_t thread_session_state_array_iterator = ep_rt_thread_session_state_array_iterator_begin(&session_states_to_delete);
-					 !ep_rt_thread_session_state_array_iterator_end(&session_states_to_delete, &thread_session_state_array_iterator);
-					 ep_rt_thread_session_state_array_iterator_next(&thread_session_state_array_iterator)) {
-
-					EventPipeThreadSessionState * session_state = ep_rt_thread_session_state_array_iterator_value(&thread_session_state_array_iterator);
-					ep_rt_thread_session_state_list_remove(&buffer_manager->thread_session_state_list, session_state);
 				}
 				ep_buffer_manager_exit_lock(buffer_manager);
 			EP_SPIN_LOCK_EXIT (&buffer_manager->rt_lock, section2)
@@ -1373,8 +1364,8 @@ ep_buffer_manager_write_all_buffers_to_file_v4 (
 
 	// foreach (session_state in session_states_to_delete)
 	for (ep_rt_thread_session_state_array_iterator_t thread_session_state_array_iterator = ep_rt_thread_session_state_array_iterator_begin(&session_states_to_delete);
-			!ep_rt_thread_session_state_array_iterator_end(&session_states_to_delete, &thread_session_state_array_iterator);
-			ep_rt_thread_session_state_array_iterator_next(&thread_session_state_array_iterator)) {
+		!ep_rt_thread_session_state_array_iterator_end(&session_states_to_delete, &thread_session_state_array_iterator);
+		ep_rt_thread_session_state_array_iterator_next(&thread_session_state_array_iterator)) {
 
 		EventPipeThreadSessionState * thread_session_state = ep_rt_thread_session_state_array_iterator_value(&thread_session_state_array_iterator);
 		EP_ASSERT (thread_session_state != NULL);
