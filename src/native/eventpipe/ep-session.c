@@ -432,6 +432,8 @@ ep_session_write_all_buffers_to_file (EventPipeSession *session, bool *events_wr
 	// ep_buffer_manager_write_all_buffer_to_file will use this to ensure that no events after
 	// the current timestamp are written into the file.
 	ep_timestamp_t stop_timestamp = ep_perf_timestamp_get ();
+	// TODO: remove is unused in final patch
+	// ep_timestamp_t adjustment = ep_perf_frequency_query();
 	ep_buffer_manager_write_all_buffers_to_file (session->buffer_manager, session->file, stop_timestamp, events_written);
 	return !ep_file_has_errors (session->file);
 }

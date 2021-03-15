@@ -248,6 +248,57 @@ ep_buffer_list_get_and_remove_head (EventPipeBufferList *buffer_list)
 	return ret_buffer;
 }
 
+bool
+ep_buffer_manager_try_reserve_buffer(
+	EventPipeBufferManager *buffer_manager,
+	uint32_t request_size)
+{
+	// TODO: Should we have a cap on the number of times this can attempt to reserve a buffer?
+	// TODO: Validate that this is correct... I think I somehow removed the limit of all buffers by doing this...
+	size_t old_size_of_all_buffers;
+	size_t new_size_of_all_buffers;
+	uint64_t iters = 0;
+	// TODO: add a sleep(0)
+	do {
+		old_size_of_all_buffers = buffer_manager->size_of_all_buffers;
+		new_size_of_all_buffers = old_size_of_all_buffers + request_size;
+		iters++;
+		if (iters % buffer_manager->yield_latency == 0) {
+			fprintf (stderr, "ep_buffer_manager_try_reserve_buffer - yielding reserve loop\n");
+			ep_rt_thread_sleep (0); // yield the thread to the scheduler in case we're in high contention
+		}
+	} while (new_size_of_all_buffers <= buffer_manager->max_size_of_all_buffers && ep_rt_atomic_compare_exchange_size_t (&buffer_manager->size_of_all_buffers, old_size_of_all_buffers, new_size_of_all_buffers) != old_size_of_all_buffers);
+
+	// fprintf(stderr, "EventPipeBufferManager::TryReserveBuffer - old: %zd, requested: %d, attempted_new: %zd, should_fail: %d\n", old_size_of_all_buffers, request_size, new_size_of_all_buffers, new_size_of_all_buffers > buffer_manager->max_size_of_all_buffers);
+	//fprintf(stderr, "EventPipeBufferManager::TryReserveBuffer - iter count %zd\n", iters);
+
+	return new_size_of_all_buffers <= buffer_manager->max_size_of_all_buffers;
+}
+
+void
+ep_buffer_manager_release_buffer(
+	EventPipeBufferManager *buffer_manager,
+	uint32_t size)
+{
+	// TODO: Should we have a cap on the number of times this can attempt to reserve a buffer?
+	uint64_t iters = 0;
+	size_t old_size_of_all_buffers;
+	size_t new_size_of_all_buffers;
+	// TODO: add a sleep(0) to yield to the scheduler
+	do {
+		old_size_of_all_buffers = buffer_manager->size_of_all_buffers;
+		new_size_of_all_buffers = old_size_of_all_buffers - size;
+		iters++;
+		if (iters % buffer_manager->yield_latency == 0) {
+			fprintf(stderr, "ep_buffer_manager_release_buffer - yielding release loop\n");
+			ep_rt_thread_sleep (0);
+		}
+	} while (new_size_of_all_buffers >= 0 && ep_rt_atomic_compare_exchange_size_t (&buffer_manager->size_of_all_buffers, old_size_of_all_buffers, new_size_of_all_buffers) != old_size_of_all_buffers);
+
+	//fprintf(stderr, "EventPipeBufferManager::ReleaseBuffer - iter count %zd\n", iters);
+	// fprintf(stderr, "EventPipeBufferManager::ReleaseBuffer - old: %zd, requested: %d, attempted_new: %zd, should_fail: %d\n", old_size_of_all_buffers, size, new_size_of_all_buffers, new_size_of_all_buffers >= 0);
+}
+
 void
 ep_buffer_manager_enter_lock(EventPipeBufferManager *buffer_manager, ep_timestamp_t wait_start)
 {
@@ -284,7 +335,7 @@ ep_buffer_manager_exit_lock(EventPipeBufferManager *buffer_manager)
 	buffer_manager->lock_iterations++;
 #ifdef FEATURE_CORECLR
 	STRESS_LOG2(LF_DIAGNOSTICS_PORT, LL_INFO100000, "Held buffer manager lock :: buffer_manager=%p, duration=%ld\n", (void*)buffer_manager, (long int)delta);
-	if (buffer_manager->lock_iterations % 100'000 == 0)
+	if (buffer_manager->lock_iterations % buffer_manager->lock_holds == 0)
 	{
 		// print the historgram to stderr and stresslog
 		fprintf(stderr, "Buffer Manager Hold Histogram at lock iteration %ld\n", buffer_manager->lock_iterations);
@@ -467,6 +518,47 @@ buffer_manager_allocate_buffer_for_thread (
 	EventPipeSequencePoint* sequence_point = NULL;
 	bool allocate_new_buffer = false;
 
+	// Determine if policy allows us to allocate another buffer
+	// size_t available_buffer_size_estimate = buffer_manager->max_size_of_all_buffers - buffer_manager->size_of_all_buffers;
+	// EP_ASSERT(available_buffer_size_estimate > 0);
+	// Pick a buffer size by multiplying the base buffer size by the number of buffers already allocated for this thread.
+	uint32_t size_multiplier = ep_thread_session_state_get_buffer_count_estimate(thread_session_state) + 1;
+	EP_ASSERT(size_multiplier > 0);
+
+	// Pick the base buffer size based.  Checked builds have a smaller size to stress the allocate/steal path more.
+#ifdef EP_CHECKED_BUILD
+	uint32_t base_buffer_size = 30 * 1024; // 30K
+#else
+	uint32_t base_buffer_size = 100 * 1024; // 100K
+#endif
+	uint32_t buffer_size = base_buffer_size * size_multiplier;
+	EP_ASSERT(buffer_size > 0);
+
+	// Make sure that buffer size >= request size so that the buffer size does not
+	// determine the max event size.
+	// EP_ASSERT (request_size <= available_buffer_size_estimate);
+
+	buffer_size = EP_MAX (request_size, buffer_size);
+	EP_ASSERT(buffer_size > 0);
+	// buffer_size = EP_MIN ((uint32_t)buffer_size, (uint32_t)available_buffer_size_estimate);
+	EP_ASSERT(buffer_size > 0);
+
+	// Don't allow the buffer size to exceed 1MB.
+	const uint32_t max_buffer_size = 1024 * 1024;
+	// if (buffer_size > max_buffer_size)
+	// 	fprintf(stderr, "BufferManager::AllocBufferForThread - %u is larger than %u\n", buffer_size, max_buffer_size);
+	buffer_size = EP_MIN (buffer_size, max_buffer_size);
+
+	EP_ASSERT(buffer_size > 0);
+
+	// Make the buffer size fit into with pagesize-aligned block, since ep_rt_valloc0 expects page-aligned sizes to be passed as arguments
+	buffer_size = (buffer_size + ep_rt_system_get_alloc_granularity () - 1) & ~(uint32_t)(ep_rt_system_get_alloc_granularity () - 1);
+
+	// Attempt to reserve the necessary buffer size
+	EP_ASSERT(buffer_size > 0);
+	ep_return_null_if_nok(ep_buffer_manager_try_reserve_buffer(buffer_manager, buffer_size));
+
+
 	// Allocating a buffer requires us to take the lock.
 	ep_timestamp_t wait_start = ep_perf_timestamp_get();
 	EP_SPIN_LOCK_ENTER (&buffer_manager->rt_lock, section1)
@@ -481,62 +573,30 @@ buffer_manager_allocate_buffer_for_thread (
 			thread_buffer_list = NULL;
 		}
 
-		// Determine if policy allows us to allocate another buffer
-		size_t available_buffer_size;
-		available_buffer_size = buffer_manager->max_size_of_all_buffers - buffer_manager->size_of_all_buffers;
-		if (request_size <= available_buffer_size)
-			allocate_new_buffer = true;
+		// The sequence counter is exclusively mutated on this thread so this is a thread-local read.
+		uint32_t sequence_number = ep_thread_session_state_get_volatile_sequence_number (thread_session_state);
+		new_buffer = ep_buffer_alloc (buffer_size, ep_thread_session_state_get_thread (thread_session_state), sequence_number);
+		ep_raise_error_if_nok_holding_spin_lock (new_buffer != NULL, section1);
 
-		if (allocate_new_buffer) {
-			// Pick a buffer size by multiplying the base buffer size by the number of buffers already allocated for this thread.
-			uint32_t size_multiplier = ep_thread_session_state_get_buffer_list (thread_session_state)->buffer_count + 1;
-
-			// Pick the base buffer size based.  Checked builds have a smaller size to stress the allocate/steal path more.
-#ifdef EP_CHECKED_BUILD
-			uint32_t base_buffer_size = 30 * 1024; // 30K
-#else
-			uint32_t base_buffer_size = 100 * 1024; // 100K
-#endif
-			uint32_t buffer_size = base_buffer_size * size_multiplier;
-
-			// Make sure that buffer size >= request size so that the buffer size does not
-			// determine the max event size.
-			EP_ASSERT (request_size <= available_buffer_size);
-
-			buffer_size = EP_MAX (request_size, buffer_size);
-			buffer_size = EP_MIN ((uint32_t)buffer_size, (uint32_t)available_buffer_size);
-
-			// Don't allow the buffer size to exceed 1MB.
-			const uint32_t max_buffer_size = 1024 * 1024;
-			buffer_size = EP_MIN (buffer_size, max_buffer_size);
-
-			// Make the buffer size fit into with pagesize-aligned block, since ep_rt_valloc0 expects page-aligned sizes to be passed as arguments
-			buffer_size = (buffer_size + ep_rt_system_get_alloc_granularity () - 1) & ~(uint32_t)(ep_rt_system_get_alloc_granularity () - 1);
-
-			// The sequence counter is exclusively mutated on this thread so this is a thread-local read.
-			uint32_t sequence_number = ep_thread_session_state_get_volatile_sequence_number (thread_session_state);
-			new_buffer = ep_buffer_alloc (buffer_size, ep_thread_session_state_get_thread (thread_session_state), sequence_number);
-			ep_raise_error_if_nok_holding_spin_lock (new_buffer != NULL, section1);
-
-			buffer_manager->size_of_all_buffers += buffer_size;
-			if (buffer_manager->sequence_point_alloc_budget != 0) {
-				// sequence point bookkeeping
-				if (buffer_size >= buffer_manager->remaining_sequence_point_alloc_budget) {
-					sequence_point = ep_sequence_point_alloc ();
-					if (sequence_point) {
-						buffer_manager_init_sequence_point_thread_list (buffer_manager, sequence_point);
-						ep_raise_error_if_nok_holding_spin_lock (buffer_manager_enqueue_sequence_point (buffer_manager, sequence_point), section1);
-						sequence_point = NULL;
-					}
-					buffer_manager->remaining_sequence_point_alloc_budget = buffer_manager->sequence_point_alloc_budget;
-				} else {
-					buffer_manager->remaining_sequence_point_alloc_budget -= buffer_size;
+		// TODO: the lockless change makes this part of the reservation
+		// buffer_manager->size_of_all_buffers += buffer_size;
+		if (buffer_manager->sequence_point_alloc_budget != 0) {
+			// sequence point bookkeeping
+			if (buffer_size >= buffer_manager->remaining_sequence_point_alloc_budget) {
+				sequence_point = ep_sequence_point_alloc ();
+				if (sequence_point) {
+					buffer_manager_init_sequence_point_thread_list (buffer_manager, sequence_point);
+					ep_raise_error_if_nok_holding_spin_lock (buffer_manager_enqueue_sequence_point (buffer_manager, sequence_point), section1);
+					sequence_point = NULL;
 				}
+				buffer_manager->remaining_sequence_point_alloc_budget = buffer_manager->sequence_point_alloc_budget;
+			} else {
+				buffer_manager->remaining_sequence_point_alloc_budget -= buffer_size;
 			}
-#ifdef EP_CHECKED_BUILD
-			buffer_manager->num_buffers_allocated++;
-#endif // EP_CHECKED_BUILD
 		}
+// #ifdef EP_CHECKED_BUILD
+		buffer_manager->num_buffers_allocated++;
+// #endif // EP_CHECKED_BUILD
 
 		// Set the buffer on the thread.
 		if (new_buffer != NULL)
@@ -559,6 +619,8 @@ ep_on_error:
 	ep_buffer_free (new_buffer);
 	new_buffer = NULL;
 
+	ep_buffer_manager_release_buffer(buffer_manager, buffer_size);
+
 	ep_exit_error_handler ();
 }
 
@@ -571,7 +633,9 @@ buffer_manager_deallocate_buffer (
 	EP_ASSERT (buffer_manager != NULL);
 
 	if (buffer) {
-		buffer_manager->size_of_all_buffers -= ep_buffer_get_size (buffer);
+		ep_buffer_manager_release_buffer(buffer_manager, ep_buffer_get_size (buffer));
+		// TODO: using the release mechanism now
+		// buffer_manager->size_of_all_buffers -= ep_buffer_get_size (buffer);
 		ep_buffer_free (buffer);
 #ifdef EP_CHECKED_BUILD
 		buffer_manager->num_buffers_allocated--;
@@ -847,14 +911,14 @@ ep_buffer_manager_alloc (
 	instance->session = session;
 	instance->size_of_all_buffers = 0;
 
-#ifdef EP_CHECKED_BUILD
+// #ifdef EP_CHECKED_BUILD
 	instance->num_buffers_allocated = 0;
 	instance->num_buffers_stolen = 0;
 	instance->num_buffers_leaked = 0;
 	instance->num_events_stored = 0;
 	ep_rt_volatile_store_int64_t (&instance->num_events_dropped, 0);
 	ep_rt_volatile_store_int64_t (&instance->num_events_written, 0);
-#endif
+// #endif
 
 	instance->current_event = NULL;
 	instance->current_buffer = NULL;
@@ -865,6 +929,30 @@ ep_buffer_manager_alloc (
 	memset(&instance->wait_histogram, 0, sizeof(instance->wait_histogram));
 
 	instance->max_size_of_all_buffers = EP_CLAMP ((size_t)100 * 1024, max_size_of_all_buffers, (size_t)UINT32_MAX);
+
+	const char *env_var = getenv("DOTNET_CollectStacks");
+	instance->should_collect_stacks = env_var != NULL ? strcmp(env_var, "true") == 0 : true;
+	fprintf(stderr, "BufferManager - setting stack collection to %d\n", instance->should_collect_stacks);
+
+	instance->yield_latency = 100;
+	const char *yield_latency_string = getenv("DOTNET_YieldLatency"); // The count of iterations to 
+	if (yield_latency_string != NULL) {
+		uint32_t parsed_latency = strtoul(yield_latency_string, NULL, 10);
+		if (parsed_latency > 0 && parsed_latency < 100000) {
+			fprintf(stderr, "BufferManager - setting yield latency to %u\n", parsed_latency);
+			instance->yield_latency = parsed_latency;
+		}
+	}
+
+	instance->lock_holds = 10000;
+	const char *lock_holds_string = getenv("DOTNET_LockHolds");
+	if (lock_holds_string != NULL) {
+		uint32_t parsed_lock_holds = strtoul(lock_holds_string, NULL, 10);
+		if (parsed_lock_holds > 0) {
+			fprintf(stderr, "BufferManager - setting lock holds to %u\n", parsed_lock_holds);
+			instance->lock_holds = parsed_lock_holds;
+		}
+	}
 
 	if (sequence_point_allocation_budget == 0) {
 		// sequence points disabled
@@ -887,6 +975,8 @@ ep_on_error:
 void
 ep_buffer_manager_free (EventPipeBufferManager * buffer_manager)
 {
+	// TODO: remove
+	fprintf(stderr, "ep_buffer_manager_free - buffers created: %ld, events written: %ld, events stored: %ld\n", (long)buffer_manager->num_buffers_allocated, (long)buffer_manager->num_events_written, (long)buffer_manager->num_events_stored);
 	ep_return_void_if_nok (buffer_manager != NULL);
 
 	ep_buffer_manager_deallocate_buffers (buffer_manager);
@@ -970,7 +1060,7 @@ ep_buffer_manager_write_event (
 	EventPipeStackContents stack_contents;
 	EventPipeStackContents *current_stack_contents;
 	current_stack_contents = ep_stack_contents_init (&stack_contents);
-	if (stack == NULL && ep_event_get_need_stack (ep_event) && !ep_session_get_rundown_enabled (session)) {
+	if (stack == NULL && ep_event_get_need_stack (ep_event) && !ep_session_get_rundown_enabled (session) && buffer_manager->should_collect_stacks) {
 		ep_walk_managed_stack_for_current_thread (current_stack_contents);
 		stack = current_stack_contents;
 	}
@@ -1041,12 +1131,12 @@ ep_buffer_manager_write_event (
 		// Indicate that there is new data to be read
 		ep_rt_wait_event_set (&buffer_manager->rt_wait_event);
 
-#ifdef EP_CHECKED_BUILD
+// #ifdef EP_CHECKED_BUILD
 	if (!alloc_new_buffer)
 		ep_rt_atomic_inc_int64_t (&buffer_manager->num_events_stored);
 	else
 		ep_rt_atomic_inc_int64_t (&buffer_manager->num_events_dropped);
-#endif
+// #endif
 
 	result = !alloc_new_buffer;
 

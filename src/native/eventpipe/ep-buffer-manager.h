@@ -116,7 +116,7 @@ struct _EventPipeBufferManager_Internal {
 	EventPipeBuffer *current_buffer;
 	EventPipeBufferList *current_buffer_list;
 	// The total allocation size of buffers under management.
-	size_t size_of_all_buffers;
+	volatile size_t size_of_all_buffers;
 	// The maximum allowable size of buffers under management.
 	// Attempted allocations above this threshold result in
 	// dropped events.
@@ -134,14 +134,17 @@ struct _EventPipeBufferManager_Internal {
 	ep_timestamp_t wait_histogram[EP_BUFFER_MANAGER_HIST_BINS];
 	unsigned long lock_iterations;
 	ep_timestamp_t lock_start_timestamp;
-#ifdef EP_CHECKED_BUILD
+	bool should_collect_stacks;
+	uint32_t yield_latency;
+	uint32_t lock_holds;
+// #ifdef EP_CHECKED_BUILD
 	volatile int64_t num_events_stored;
 	volatile int64_t num_events_dropped;
 	int64_t num_events_written;
 	uint32_t num_buffers_allocated;
 	uint32_t num_buffers_stolen;
 	uint32_t num_buffers_leaked;
-#endif
+// #endif
 };
 
 static ep_timestamp_t histogram_limits[EP_BUFFER_MANAGER_HIST_BINS] = { 10, 50, 100, 500, 1000, 2500, 5000, 10000, 15000, 50'000, 100'000, -1 };
@@ -185,6 +188,18 @@ ep_buffer_manager_enter_lock(EventPipeBufferManager *buffer_manager, ep_timestam
 
 void
 ep_buffer_manager_exit_lock(EventPipeBufferManager *buffer_manager);
+
+// Attempt to reserve space for a buffer
+bool
+ep_buffer_manager_try_reserve_buffer(
+	EventPipeBufferManager *buffer_manager,
+	uint32_t request_size);
+
+// Release a reserved buffer budget
+void
+ep_buffer_manager_release_buffer(
+	EventPipeBufferManager *buffer_manager,
+	uint32_t size);
 
 // Write an event to the input thread's current event buffer.
 // An optional event_thread can be provided for sample profiler events.
