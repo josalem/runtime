@@ -549,6 +549,10 @@ buffer_manager_allocate_buffer_for_thread (
 	// 	fprintf(stderr, "BufferManager::AllocBufferForThread - %u is larger than %u\n", buffer_size, max_buffer_size);
 	buffer_size = EP_MIN (buffer_size, max_buffer_size);
 
+	if (buffer_manager->fixed_buffer_size > 0) {
+		buffer_size = 1024 * 1024 * buffer_manager->fixed_buffer_size;
+	}
+
 	EP_ASSERT(buffer_size > 0);
 
 	// Make the buffer size fit into with pagesize-aligned block, since ep_rt_valloc0 expects page-aligned sizes to be passed as arguments
@@ -575,8 +579,16 @@ buffer_manager_allocate_buffer_for_thread (
 
 		// The sequence counter is exclusively mutated on this thread so this is a thread-local read.
 		uint32_t sequence_number = ep_thread_session_state_get_volatile_sequence_number (thread_session_state);
-		new_buffer = ep_buffer_alloc (buffer_size, ep_thread_session_state_get_thread (thread_session_state), sequence_number);
+		if (buffer_size == 1024 * 1024 && buffer_size < buffer_manager->size_of_all_cached_buffers) {
+			ep_rt_buffer_queue_pop_head (&buffer_manager->cached_buffer_queue, &new_buffer);
+			ep_buffer_reinit (new_buffer, ep_thread_session_state_get_thread (thread_session_state), sequence_number);
+			buffer_manager->size_of_all_cached_buffers -= ep_buffer_get_size (new_buffer);
+			buffer_manager->num_buffers_reused++;
+		} else {
+			new_buffer = ep_buffer_alloc (buffer_size, ep_thread_session_state_get_thread (thread_session_state), sequence_number, buffer_manager->use_malloc);
+		}
 		ep_raise_error_if_nok_holding_spin_lock (new_buffer != NULL, section1);
+
 
 		// TODO: the lockless change makes this part of the reservation
 		// buffer_manager->size_of_all_buffers += buffer_size;
@@ -616,7 +628,7 @@ ep_on_error:
 	ep_buffer_list_free (thread_buffer_list);
 	thread_buffer_list = NULL;
 
-	ep_buffer_free (new_buffer);
+	ep_buffer_free (new_buffer, buffer_manager->use_malloc);
 	new_buffer = NULL;
 
 	ep_buffer_manager_release_buffer(buffer_manager, buffer_size);
@@ -636,7 +648,13 @@ buffer_manager_deallocate_buffer (
 		ep_buffer_manager_release_buffer(buffer_manager, ep_buffer_get_size (buffer));
 		// TODO: using the release mechanism now
 		// buffer_manager->size_of_all_buffers -= ep_buffer_get_size (buffer);
-		ep_buffer_free (buffer);
+		if ((ep_buffer_get_size (buffer) >= 1024 * 1024) || (buffer_manager->fixed_buffer_size > 0)) {
+			buffer_manager->num_buffers_cached++;
+			ep_rt_buffer_queue_push_tail (&buffer_manager->cached_buffer_queue, buffer);
+			buffer_manager->size_of_all_cached_buffers += ep_buffer_get_size (buffer);
+		} else {
+			ep_buffer_free (buffer, buffer_manager->use_malloc);
+		}
 #ifdef EP_CHECKED_BUILD
 		buffer_manager->num_buffers_allocated--;
 #endif
@@ -908,8 +926,12 @@ ep_buffer_manager_alloc (
 	ep_rt_wait_event_alloc (&instance->rt_wait_event, false, true);
 	ep_raise_error_if_nok (ep_rt_wait_event_is_valid (&instance->rt_wait_event));
 
+	ep_rt_buffer_queue_alloc (&instance->cached_buffer_queue);
+	ep_raise_error_if_nok (ep_rt_buffer_queue_is_valid (&instance->cached_buffer_queue));
+
 	instance->session = session;
 	instance->size_of_all_buffers = 0;
+	instance->size_of_all_cached_buffers = 0;
 
 // #ifdef EP_CHECKED_BUILD
 	instance->num_buffers_allocated = 0;
@@ -934,6 +956,14 @@ ep_buffer_manager_alloc (
 	instance->should_collect_stacks = env_var != NULL ? strcmp(env_var, "true") == 0 : true;
 	fprintf(stderr, "BufferManager - setting stack collection to %d\n", instance->should_collect_stacks);
 
+	const char *use_malloc_string = getenv("DOTNET_UseMalloc");
+	instance->use_malloc = use_malloc_string != NULL ? strcmp(use_malloc_string, "true") == 0 : false;
+	fprintf(stderr, "BufferManager - use malloc? %d\n", instance->use_malloc);
+
+	const char *use_wait_event_string = getenv("DOTNET_UseWaitEvent");
+	instance->use_wait_event = use_wait_event_string != NULL ? strcmp(use_wait_event_string, "true") == 0 : true;
+	fprintf(stderr, "BufferManager - use wait event? %d\n", instance->use_wait_event);
+
 	instance->yield_latency = 100;
 	const char *yield_latency_string = getenv("DOTNET_YieldLatency"); // The count of iterations to 
 	if (yield_latency_string != NULL) {
@@ -941,6 +971,26 @@ ep_buffer_manager_alloc (
 		if (parsed_latency > 0 && parsed_latency < 100000) {
 			fprintf(stderr, "BufferManager - setting yield latency to %u\n", parsed_latency);
 			instance->yield_latency = parsed_latency;
+		}
+	}
+
+	instance->flushing_latency = 0;
+	const char *flushing_latency_string = getenv("DOTNET_FlushingLatencyMS"); // The count of iterations to 
+	if (flushing_latency_string != NULL) {
+		uint32_t parsed_latency = strtoul(flushing_latency_string, NULL, 10);
+		if (parsed_latency > 0) {
+			fprintf(stderr, "BufferManager - setting flushing latency to %u\n", parsed_latency);
+			instance->flushing_latency = parsed_latency;
+		}
+	}
+
+	instance->fixed_buffer_size = 0;
+	const char *fixed_buffer_size_string = getenv("DOTNET_FixedBufferSizeMB");
+	if (fixed_buffer_size_string != NULL) {
+		uint32_t parsed_buffer_size = strtoul(fixed_buffer_size_string, NULL, 10);
+		if (parsed_buffer_size > 0) {
+			fprintf(stderr, "BufferManager - setting fixed buffer size to %u\n", parsed_buffer_size);
+			instance->fixed_buffer_size = parsed_buffer_size;
 		}
 	}
 
@@ -976,7 +1026,7 @@ void
 ep_buffer_manager_free (EventPipeBufferManager * buffer_manager)
 {
 	// TODO: remove
-	fprintf(stderr, "ep_buffer_manager_free - buffers created: %ld, events written: %ld, events stored: %ld\n", (long)buffer_manager->num_buffers_allocated, (long)buffer_manager->num_events_written, (long)buffer_manager->num_events_stored);
+	fprintf(stderr, "ep_buffer_manager_free - buffers created: %ld, buffers cached: %ld, buffers reused: %ld, events stored: %ld\n", (long)buffer_manager->num_buffers_allocated, (long)buffer_manager->num_buffers_cached, (long)buffer_manager->num_buffers_reused, (long)buffer_manager->num_events_stored);
 	ep_return_void_if_nok (buffer_manager != NULL);
 
 	ep_buffer_manager_deallocate_buffers (buffer_manager);
@@ -1082,7 +1132,7 @@ ep_buffer_manager_write_event (
 			alloc_new_buffer = true;
 		} else {
 			// Attempt to write the event to the buffer. If this fails, we should allocate a new buffer.
-			if (ep_buffer_write_event (buffer, event_thread, session, ep_event, payload, activity_id, related_activity_id, stack))
+			if (ep_buffer_write_event (buffer, event_thread, session, ep_event, payload, activity_id, related_activity_id, stack, buffer_manager->should_collect_stacks))
 				ep_thread_session_state_increment_sequence_number (session_state);
 			else
 				alloc_new_buffer = true;
@@ -1120,14 +1170,14 @@ ep_buffer_manager_write_event (
 					// Try to write the event after we allocated a buffer.
 					// This is the first time if the thread had no buffers before the call to this function.
 					// This is the second time if this thread did have one or more buffers, but they were full.
-					alloc_new_buffer = !ep_buffer_write_event (buffer, event_thread, session, ep_event, payload, activity_id, related_activity_id, stack);
+					alloc_new_buffer = !ep_buffer_write_event (buffer, event_thread, session, ep_event, payload, activity_id, related_activity_id, stack, buffer_manager->should_collect_stacks);
 					EP_ASSERT(!alloc_new_buffer);
 					ep_thread_session_state_increment_sequence_number (session_state);
 			EP_SPIN_LOCK_EXIT (thread_lock, section3)
 		}
 	}
 
-	if (should_signal_reader_thread)
+	if (should_signal_reader_thread && buffer_manager->use_wait_event)
 		// Indicate that there is new data to be read
 		ep_rt_wait_event_set (&buffer_manager->rt_wait_event);
 
@@ -1307,6 +1357,9 @@ ep_buffer_manager_write_all_buffers_to_file_v4 (
 	EP_RT_DECLARE_LOCAL_THREAD_SESSION_STATE_ARRAY(session_states_to_delete);
 	ep_rt_thread_session_state_array_init(&session_states_to_delete);
 	EventPipeSequencePoint *sequence_point = NULL;
+	// TODO: Remove later
+	stop_timestamp = stop_timestamp - (buffer_manager->flushing_latency * 1000000);
+	ep_raise_error_if_nok(stop_timestamp > 0);
 	ep_timestamp_t current_timestamp_boundary = stop_timestamp;
 	ep_timestamp_t wait_start = ep_perf_timestamp_get();
 	EP_SPIN_LOCK_ENTER (&buffer_manager->rt_lock, section1)
@@ -1569,6 +1622,8 @@ ep_buffer_manager_deallocate_buffers (EventPipeBufferManager *buffer_manager)
 
 		ep_rt_thread_session_state_array_iterator_next (&thread_session_states_to_remove_iterator);
 	}
+
+	// TODO: free the cached buffers
 
 ep_on_exit:
 	ep_rt_thread_session_state_array_fini (&thread_session_states_to_remove);

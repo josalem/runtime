@@ -1485,6 +1485,8 @@ EP_RT_DEFINE_ARRAY_ITERATOR (buffer_array, ep_rt_buffer_array_t, ep_rt_buffer_ar
 #define EP_RT_DECLARE_LOCAL_BUFFER_ARRAY(var_name) \
 	EP_RT_DECLARE_LOCAL_ARRAY_VARIABLE(var_name, ep_rt_buffer_array_t)
 
+EP_RT_DEFINE_QUEUE (buffer_queue, ep_rt_buffer_queue_t, EventPipeBuffer *)
+
 /*
  * EventPipeBufferList.
  */

@@ -85,10 +85,25 @@ EventPipeBuffer *
 ep_buffer_alloc (
 	uint32_t buffer_size,
 	EventPipeThread *writer_thread,
-	uint32_t event_sequence_number);
+	uint32_t event_sequence_number,
+	bool use_malloc);
 
 void
-ep_buffer_free (EventPipeBuffer *buffer);
+ep_buffer_free (EventPipeBuffer *buffer, bool use_malloc);
+
+static
+inline
+void
+ep_buffer_reinit(EventPipeBuffer *buffer, EventPipeThread *writer_thread, uint32_t event_sequence_number)
+{
+	buffer->prev_buffer = NULL;
+	buffer->next_buffer = NULL;
+	buffer->current_read_event = NULL;
+	buffer->creation_timestamp = ep_perf_timestamp_get ();
+	buffer->current = buffer->buffer;
+	buffer->writer_thread = writer_thread;
+	buffer->event_sequence_number = event_sequence_number;
+}
 
 static
 inline
@@ -124,7 +139,8 @@ ep_buffer_write_event (
 	EventPipeEventPayload *payload,
 	const uint8_t *activity_id,
 	const uint8_t *related_activity_id,
-	EventPipeStackContents *stack);
+	EventPipeStackContents *stack,
+	bool collect_stacks);
 
 // Advances read cursor to the next event or NULL if there aren't any more. When the
 // buffer is first made readable the cursor is automatically positioned on the first

@@ -143,6 +143,9 @@ typedef struct _rt_coreclr_array_internal_t<EventPipeBuffer *> ep_rt_buffer_arra
 #undef ep_rt_buffer_array_iterator_t
 typedef struct _rt_coreclr_array_iterator_internal_t<EventPipeBuffer *> ep_rt_buffer_array_iterator_t;
 
+#undef ep_rt_buffer_queue_t
+typedef struct _rt_coreclr_queue_internal_t<EventPipeBuffer *> ep_rt_buffer_queue_t;
+
 /*
  * EventPipeBufferList.
  */

@@ -50,6 +50,20 @@ EP_RT_DEFINE_THREAD_FUNC (streaming_thread)
 	bool success = true;
 	ep_rt_wait_event_handle_t *wait_event = ep_session_get_wait_event (session);
 
+	char *sleep_time_string = getenv("DOTNET_FlushingThreadSleepTimeMS");
+	uint32_t timeout_ns = 100000000; // 100 ms
+	if (sleep_time_string != NULL) {
+		uint32_t parsed_timeout = strtoul (sleep_time_string, NULL, 10);
+		if (parsed_timeout > 0) {
+			timeout_ns = parsed_timeout * 1000000;
+			fprintf (stderr, "Setting flushing thread sleep time to %lu\n", timeout_ns);
+		}
+	}
+
+	bool use_wait_event = true;
+	const char *use_wait_event_string = getenv("DOTNET_UseWaitEvent");
+	use_wait_event = use_wait_event_string != NULL ? strcmp(use_wait_event_string, "true") == 0 : use_wait_event;
+
 	EP_GCX_PREEMP_ENTER
 		while (ep_session_get_ipc_streaming_enabled (session)) {
 			bool events_written = false;
@@ -58,13 +72,12 @@ EP_RT_DEFINE_THREAD_FUNC (streaming_thread)
 				break;
 			}
 
-			if (!events_written) {
+			if (!events_written && use_wait_event) {
 				// No events were available, sleep until more are available
 				ep_rt_wait_event_wait (wait_event, EP_INFINITE_WAIT, false);
 			}
 
 			// Wait until it's time to sample again.
-			const uint32_t timeout_ns = 100000000; // 100 msec.
 			ep_rt_thread_sleep (timeout_ns);
 		}
 

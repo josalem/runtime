@@ -19,7 +19,8 @@ EventPipeBuffer *
 ep_buffer_alloc (
 	uint32_t buffer_size,
 	EventPipeThread *writer_thread,
-	uint32_t event_sequence_number)
+	uint32_t event_sequence_number,
+	bool use_malloc)
 {
 	EventPipeBuffer *instance = ep_rt_object_alloc (EventPipeBuffer);
 	ep_raise_error_if_nok (instance != NULL);
@@ -27,7 +28,11 @@ ep_buffer_alloc (
 	instance->writer_thread = writer_thread;
 	instance->event_sequence_number = event_sequence_number;
 
-	instance->buffer = ep_rt_valloc0 (buffer_size);
+	if (use_malloc) {
+		instance->buffer = ep_rt_object_array_alloc (uint8_t, buffer_size);
+	} else {
+		instance->buffer = ep_rt_valloc0 (buffer_size);
+	}
 	ep_raise_error_if_nok (instance->buffer);
 
 	instance->limit = instance->buffer + buffer_size;
@@ -46,20 +51,24 @@ ep_on_exit:
 	return instance;
 
 ep_on_error:
-	ep_buffer_free (instance);
+	ep_buffer_free (instance, use_malloc);
 	instance = NULL;
 	ep_exit_error_handler ();
 }
 
 void
-ep_buffer_free (EventPipeBuffer *buffer)
+ep_buffer_free (EventPipeBuffer *buffer, bool use_malloc)
 {
 	ep_return_void_if_nok (buffer != NULL);
 
 	// We should never be deleting a buffer that a writer thread might still try to write to
 	EP_ASSERT (ep_rt_volatile_load_uint32_t (&buffer->state) == (uint32_t)EP_BUFFER_STATE_READ_ONLY);
 
-	ep_rt_vfree (buffer->buffer, buffer->limit - buffer->buffer);
+	if (use_malloc) {
+		ep_rt_object_array_free (buffer->buffer);
+	} else {
+		ep_rt_vfree (buffer->buffer, buffer->limit - buffer->buffer);
+	}
 	ep_rt_object_free (buffer);
 }
 
@@ -72,7 +81,8 @@ ep_buffer_write_event (
 	EventPipeEventPayload *payload,
 	const uint8_t *activity_id,
 	const uint8_t *related_activity_id,
-	EventPipeStackContents *stack)
+	EventPipeStackContents *stack,
+	bool collect_stacks)
 {
 	EP_ASSERT (buffer != NULL);
 	EP_ASSERT (payload != NULL);
@@ -97,7 +107,7 @@ ep_buffer_write_event (
 	EventPipeStackContents stack_contents;
 	EventPipeStackContents *current_stack_contents;
 	current_stack_contents = ep_stack_contents_init (&stack_contents);
-	if (stack == NULL && ep_event_get_need_stack (ep_event) && !ep_session_get_rundown_enabled (session)) {
+	if (stack == NULL && ep_event_get_need_stack (ep_event) && !ep_session_get_rundown_enabled (session) && collect_stacks) {
 		ep_walk_managed_stack_for_current_thread (current_stack_contents);
 		stack = current_stack_contents;
 	}

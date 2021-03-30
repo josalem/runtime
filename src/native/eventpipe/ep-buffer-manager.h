@@ -117,6 +117,8 @@ struct _EventPipeBufferManager_Internal {
 	EventPipeBufferList *current_buffer_list;
 	// The total allocation size of buffers under management.
 	volatile size_t size_of_all_buffers;
+	// total cached buffer size
+	volatile size_t size_of_all_cached_buffers;
 	// The maximum allowable size of buffers under management.
 	// Attempted allocations above this threshold result in
 	// dropped events.
@@ -127,6 +129,16 @@ struct _EventPipeBufferManager_Internal {
 	// The total amount of allocations we can do after one sequence
 	// point before triggering the next one
 	size_t sequence_point_alloc_budget;
+	// A list of used buffers that are set for re-use
+	// protected by buffer_manager->rt_lock
+	// TODO: track in size_of_all_buffers
+	ep_rt_buffer_queue_t cached_buffer_queue;
+	int64_t num_buffers_cached = 0;
+	int64_t num_buffers_reused = 0;
+	uint32_t flushing_latency = 0;
+	bool use_malloc = false;
+	bool use_wait_event = true;
+	uint32_t fixed_buffer_size = 0;
 
 	// HACK log time holding lock into this array as a histogram
 	// see histogram_limits for each bucket's upper bound, -1 means unbounded

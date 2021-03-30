@@ -15,6 +15,9 @@
 #define ep_rt_buffer_array_t ep_rt_redefine
 #define ep_rt_buffer_array_iterator_t ep_rt_redefine
 
+#define ep_rt_buffer_queue_t ep_rt_redefine
+#define ep_rt_buffer_queue_iterator_t ep_rt_redefine
+
 /*
  * EventPipeBufferList.
  */
