@@ -285,6 +285,8 @@ ep_file_stream_writer_write (
  * IpcStreamWriter.
  */
 
+#define IPC_HIST_BUCKETS 10
+
 #if defined(EP_INLINE_GETTER_SETTER) || defined(EP_IMPL_STREAM_GETTER_SETTER)
 struct _IpcStreamWriter {
 #else
@@ -292,7 +294,55 @@ struct _IpcStreamWriter_Internal {
 #endif
 	StreamWriter stream_writer;
 	IpcStream *ipc_stream;
+	// [size][time]
+	uint64_t write_histogram[IPC_HIST_BUCKETS][IPC_HIST_BUCKETS];
 };
+
+static int32_t ep_histogram_size_limits[IPC_HIST_BUCKETS] = { 10, 100, 1000, 10000, 100000, 250000, 500000, 750000, 1000000, -1 };
+static ep_timestamp_t ep_histogram_duration_limits[IPC_HIST_BUCKETS] = { 10, 100, 500, 1000, 5000, 10000, 100'000, 500'000, 1'000'000, -1 };
+
+static
+inline
+void
+ep_hist_entry (IpcStreamWriter *ipc_stream, uint32_t size, ep_timestamp_t duration)
+{
+	for (int i = 0; i < IPC_HIST_BUCKETS; i++) {
+		if ((int64_t)size > ep_histogram_size_limits[i] && ep_histogram_size_limits[i] > -1) {
+			continue;
+		} else {
+			for (int j = 0; j < IPC_HIST_BUCKETS; j++) {
+				if (duration > ep_histogram_duration_limits[j] && ep_histogram_duration_limits[j] > -1) {
+					continue;
+				} else {
+					ipc_stream->write_histogram[i][j]++;
+					break;
+				}
+			}
+			break;
+		}
+	}
+}
+
+static
+inline
+void
+ep_print_histogram (IpcStreamWriter *ipc_stream)
+{
+	fprintf (stderr, "2D histogram of write times (ns) vs size (bytes) for (%p):\n", (void *)ipc_stream);
+	fprintf (stderr, "\t (s\\d) ");
+	for (int i = 0; i < IPC_HIST_BUCKETS; i++) {
+		fprintf (stderr, " %7d", (long int)ep_histogram_duration_limits[i]);
+	}
+	fprintf (stderr, "\n");
+
+	for (int i = 0; i < IPC_HIST_BUCKETS; i++) {
+		fprintf (stderr, "\t%7d", (int)ep_histogram_size_limits[i]);
+		for (int j = 0; j < IPC_HIST_BUCKETS; j++) {
+			fprintf (stderr, " %7lu", (unsigned long)ipc_stream->write_histogram[i][j]);
+		}
+		fprintf (stderr, "\n");
+	}
+}
 
 #if !defined(EP_INLINE_GETTER_SETTER) && !defined(EP_IMPL_STREAM_GETTER_SETTER)
 struct _IpcStreamWriter {

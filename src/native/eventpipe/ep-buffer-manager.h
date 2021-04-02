@@ -144,6 +144,7 @@ struct _EventPipeBufferManager_Internal {
 	// see histogram_limits for each bucket's upper bound, -1 means unbounded
 	ep_timestamp_t hold_histogram[EP_BUFFER_MANAGER_HIST_BINS];
 	ep_timestamp_t wait_histogram[EP_BUFFER_MANAGER_HIST_BINS];
+	uint64_t buffer_usage_at_conversion_histogram[10];
 	unsigned long lock_iterations;
 	ep_timestamp_t lock_start_timestamp;
 	bool should_collect_stacks;
@@ -160,6 +161,7 @@ struct _EventPipeBufferManager_Internal {
 };
 
 static ep_timestamp_t histogram_limits[EP_BUFFER_MANAGER_HIST_BINS] = { 10, 50, 100, 500, 1000, 2500, 5000, 10000, 15000, 50'000, 100'000, -1 };
+static double buffer_histogram_limits[10] = { 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0 };
 
 #if !defined(EP_INLINE_GETTER_SETTER) && !defined(EP_IMPL_BUFFER_MANAGER_GETTER_SETTER)
 struct _EventPipeBufferManager {
@@ -200,6 +202,11 @@ ep_buffer_manager_enter_lock(EventPipeBufferManager *buffer_manager, ep_timestam
 
 void
 ep_buffer_manager_exit_lock(EventPipeBufferManager *buffer_manager);
+
+static
+inline
+void
+ep_buffer_manager_buffer_hist_entry (EventPipeBufferManager *buffer_manager, EventPipeBuffer *buffer);
 
 // Attempt to reserve space for a buffer
 bool

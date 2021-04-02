@@ -420,8 +420,10 @@ ep_thread_session_state_set_write_buffer (
 	EP_ASSERT ((new_buffer == NULL) || (ep_rt_volatile_load_uint32_t (ep_buffer_get_state_cref (new_buffer)) == EP_BUFFER_STATE_WRITABLE));
 	EP_ASSERT ((thread_session_state->write_buffer == NULL) || (ep_rt_volatile_load_uint32_t (ep_buffer_get_state_cref (thread_session_state->write_buffer)) == EP_BUFFER_STATE_WRITABLE));
 
-	if (thread_session_state->write_buffer)
+	if (thread_session_state->write_buffer) {
 		ep_buffer_convert_to_read_only (thread_session_state->write_buffer);
+		ep_buffer_manager_buffer_hist_entry (thread_session_state->session->buffer_manager, thread_session_state->write_buffer);
+	}
 
 	thread_session_state->write_buffer = new_buffer;
 }

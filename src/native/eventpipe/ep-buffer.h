@@ -114,6 +114,15 @@ ep_buffer_get_size (const EventPipeBuffer *buffer)
 }
 
 static
+inline
+double
+ep_buffer_get_usage_percent (const EventPipeBuffer *buffer)
+{
+	EP_ASSERT (ep_buffer_get_limit (buffer) >= buffer->current);
+	return (double)(ep_buffer_get_limit (buffer) - buffer->current) / (double)(ep_buffer_get_size (buffer));
+}
+
+static
 EP_ALWAYS_INLINE
 uint8_t *
 ep_buffer_get_next_aligned_address (const EventPipeBuffer *buffer, uint8_t *address)

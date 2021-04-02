@@ -565,6 +565,8 @@ ep_ipc_stream_writer_alloc (
 	//Ownership transfered.
 	instance->ipc_stream = stream;
 
+	memset (&instance->write_histogram, 0, sizeof(instance->write_histogram));
+
 ep_on_exit:
 	return instance;
 
@@ -578,7 +580,7 @@ void
 ep_ipc_stream_writer_free (IpcStreamWriter *ipc_stream_writer)
 {
 	ep_return_void_if_nok (ipc_stream_writer != NULL);
-
+	ep_print_histogram (ipc_stream_writer);
 	ep_ipc_stream_free_vcall (ipc_stream_writer->ipc_stream);
 	ep_stream_writer_fini (&ipc_stream_writer->stream_writer);
 	ep_rt_object_free (ipc_stream_writer);
@@ -600,8 +602,17 @@ ep_ipc_stream_writer_write (
 
 	bool result = false;
 
+
 	ep_raise_error_if_nok (ep_ipc_stream_writer_get_ipc_stream (ipc_stream_writer) != NULL);
+	ep_timestamp_t start_time = ep_perf_timestamp_get();
 	result = ep_ipc_stream_write_vcall (ep_ipc_stream_writer_get_ipc_stream (ipc_stream_writer), buffer, bytes_to_write, bytes_written, EP_INFINITE_WAIT);
+
+	ep_timestamp_t stop_time = ep_perf_timestamp_get();
+	if (result) {
+		ep_timestamp_t duration = stop_time - start_time;
+		// duration /= (ep_perf_frequency_query() / 1'000'000'000);
+		ep_hist_entry (ipc_stream_writer, *bytes_written, duration);
+	}
 
 ep_on_exit:
 	return result;

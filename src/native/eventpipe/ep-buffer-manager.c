@@ -69,6 +69,22 @@ buffer_manager_deallocate_buffer (
 	EventPipeBufferManager *buffer_manager,
 	EventPipeBuffer *buffer);
 
+static
+inline
+void
+ep_buffer_manager_buffer_hist_entry (EventPipeBufferManager *buffer_manager, EventPipeBuffer *buffer)
+{
+	double usage_percent = ep_buffer_get_usage_percent(buffer);
+	for (int i = 0; i < 10; i++) {
+		if (usage_percent > buffer_histogram_limits[i]) {
+			continue;
+		} else {
+			buffer_manager->buffer_usage_at_conversion_histogram[i]++;
+			break;
+		}
+	}
+}
+
 // An iterator that can enumerate all the events which have been written into this buffer manager.
 // Initially the iterator starts uninitialized and get_current_event () returns NULL. Calling move_next_xxx ()
 // attempts to advance the cursor to the next event. If there is no event prior to stop_timestamp then
@@ -949,6 +965,7 @@ ep_buffer_manager_alloc (
 	// init the limits of the bins
 	memset(&instance->hold_histogram, 0, sizeof(instance->hold_histogram));
 	memset(&instance->wait_histogram, 0, sizeof(instance->wait_histogram));
+	memset(&instance->buffer_usage_at_conversion_histogram, 0, sizeof(instance->buffer_usage_at_conversion_histogram));
 
 	instance->max_size_of_all_buffers = EP_CLAMP ((size_t)100 * 1024, max_size_of_all_buffers, (size_t)UINT32_MAX);
 
@@ -1027,6 +1044,10 @@ ep_buffer_manager_free (EventPipeBufferManager * buffer_manager)
 {
 	// TODO: remove
 	fprintf(stderr, "ep_buffer_manager_free - buffers created: %ld, buffers cached: %ld, buffers reused: %ld, events stored: %ld\n", (long)buffer_manager->num_buffers_allocated, (long)buffer_manager->num_buffers_cached, (long)buffer_manager->num_buffers_reused, (long)buffer_manager->num_events_stored);
+	fprintf(stderr, "ep_buffer_manager_free - Histogram of buffer usage percent at read conversion\n");
+	for (int i = 0; i < 10; i++)
+		fprintf(stderr, "    %f -> %ld\n", buffer_histogram_limits[i], (long int)buffer_manager->buffer_usage_at_conversion_histogram[i]);
+
 	ep_return_void_if_nok (buffer_manager != NULL);
 
 	ep_buffer_manager_deallocate_buffers (buffer_manager);
